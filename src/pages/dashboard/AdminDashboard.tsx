@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { StatsCard } from '@/components/dashboard/StatsCard';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -21,6 +21,7 @@ import {
 import { apiService } from '@/services/api';
 import { useToast } from '@/hooks/use-toast';
 import { DeliveryUpload } from '@/components/delivery/DeliveryUpload';
+import { supabase } from '@/integrations/supabase/client';
 
 interface DriverLoadStatus {
   id: string;
@@ -62,54 +63,49 @@ export const AdminDashboard = () => {
   const { toast } = useToast();
   const navigate = useNavigate();
 
-  useEffect(() => {
-    loadDashboardData();
-  }, []);
-
-  const loadDashboardData = async () => {
+  const loadDashboardData = useCallback(async (silent = false) => {
     try {
-      console.log('[AdminDashboard] 1. Iniciando busca de dados do dashboard...');
+      if (!silent) setLoading(true);
       // CORREÇÃO: Usa o endpoint correto para buscar os KPIs.
       const response = await apiService.getDashboardKPIs();
-      console.log('[AdminDashboard] 2. Resposta da API recebida:', response);
+      let deliveriesList: any[] | undefined;
 
       if (response.success && response.data) {
-        console.log('[AdminDashboard] 3. Resposta com sucesso. Dados brutos:', response.data);
         const kpis: any = response.data;
+        deliveriesList = Array.isArray(kpis.today_deliveries?.list) ? kpis.today_deliveries.list : undefined;
         const newStats = {
-          totalEntregas: kpis.today_deliveries?.total ?? 0,
-          entregasRealizadas: kpis.today_deliveries?.completed ?? 0,
-          entregasPendentes: kpis.today_deliveries?.pending ?? 0,
-          ocorrencias: kpis.pending_occurrences ?? 0,
-          motoristasAtivos: kpis.active_drivers ?? 0, // Adicionado para consistência
+          totalEntregas: Number(kpis.today_deliveries?.total ?? kpis.total_deliveries ?? 0),
+          entregasRealizadas: Number(kpis.today_deliveries?.completed ?? kpis.completed_deliveries ?? 0),
+          entregasPendentes: Number(kpis.today_deliveries?.in_progress ?? kpis.today_deliveries?.pending ?? kpis.pending_deliveries ?? 0),
+          ocorrencias: Number(kpis.pending_occurrences ?? 0),
+          motoristasAtivos: Number(kpis.active_drivers ?? 0),
         };
-        console.log('[AdminDashboard] 4. Novos stats calculados:', newStats);
         setStats(newStats);
       } else {
-        console.warn('[AdminDashboard] A resposta da API não foi bem-sucedida ou não continha dados.', response);
+        throw new Error(response.error || 'Nao foi possivel carregar os KPIs.');
       }
 
       // Carrega dados de carregamento do dia, ocorrências e atividade recente
-      await Promise.all([loadDriverLoadStatuses(), loadDailyOccurrences(), loadRecentActivity()]);
+      await Promise.all([loadDriverLoadStatuses(deliveriesList), loadDailyOccurrences(), loadRecentActivity()]);
     } catch (error) {
-      console.error('[AdminDashboard] 5. Ocorreu um erro na busca de dados:', error);
-      toast({
-        title: "Erro ao carregar dados",
-        description: "Não foi possível carregar os dados do dashboard",
-        variant: "destructive",
-      });
+      if (!silent) {
+        toast({
+          title: "Erro ao carregar dados",
+          description: error instanceof Error ? error.message : "Nao foi possivel carregar os dados do dashboard",
+          variant: "destructive",
+        });
+      }
     } finally {
-      console.log('[AdminDashboard] 6. Finalizando carregamento.');
       setLoading(false);
     }
-  };
+  }, [toast]);
 
-  const loadDriverLoadStatuses = async () => {
+  const loadDriverLoadStatuses = async (deliveriesFromKpis?: any[]) => {
     const today = new Date().toISOString().split('T')[0];
-    const response = await apiService.getDeliveries({ scheduled_date: today });
+    const response = deliveriesFromKpis ? null : await apiService.getDeliveries({ scheduled_date: today });
 
-    if (response.success && response.data) {
-      const deliveries = response.data as any[];
+    if (deliveriesFromKpis || (response?.success && response.data)) {
+      const deliveries = (deliveriesFromKpis || response?.data || []) as any[];
 
       // Agrupa entregas por motorista
       const byDriver = new Map<string, DriverLoadStatus>();
@@ -132,7 +128,7 @@ export const AdminDashboard = () => {
         const driver = byDriver.get(driverId)!;
         driver.deliveries.push(delivery);
 
-        if (delivery.status === 'ASSIGNED' || delivery.status === 'IN_TRANSIT') {
+        if (['ASSIGNED', 'IN_TRANSIT', 'DELIVERED'].includes(delivery.status)) {
           driver.nfsCarregadas++;
           if (delivery.status === 'IN_TRANSIT') {
             driver.status = 'EM_ROTA';
@@ -144,7 +140,16 @@ export const AdminDashboard = () => {
         }
       });
 
-      setDriverLoadStatuses(Array.from(byDriver.values()));
+      setDriverLoadStatuses(Array.from(byDriver.values()).map((driver) => {
+        const statuses = driver.deliveries.map((delivery) => delivery.status);
+        if (statuses.length > 0 && statuses.every((status) => status === 'DELIVERED')) {
+          return { ...driver, status: 'FINALIZADO' as const };
+        }
+        if (statuses.includes('IN_TRANSIT')) {
+          return { ...driver, status: 'EM_ROTA' as const };
+        }
+        return driver;
+      }));
     }
   };
 
@@ -169,29 +174,36 @@ export const AdminDashboard = () => {
   };
 
   const loadRecentActivity = async () => {
-    try {
-      const { supabase } = await import('@/integrations/supabase/client');
-      const { data, error } = await supabase
-        .from('delivery_events')
-        .select('*, deliveries(nf_number), drivers(name)')
-        .order('created_at', { ascending: false })
-        .limit(5);
-
-      if (!error && data) {
-        const activities = (data as any[]).map((event: any) => ({
-          id: event.id,
-          type: event.event_type,
-          nf_number: event.deliveries?.nf_number || 'N/A',
-          driver_name: event.drivers?.name || 'Motorista',
-          description: event.description || event.event_type,
-          created_at: event.created_at,
-        }));
-        setRecentActivity(activities);
-      }
-    } catch (err) {
-      console.error('Erro ao carregar atividade recente:', err);
+    const response = await apiService.getRecentDeliveryEvents(5);
+    if (response.success) {
+      setRecentActivity(response.data);
     }
   };
+
+  useEffect(() => {
+    loadDashboardData();
+  }, [loadDashboardData]);
+
+  useEffect(() => {
+    let debounceId: ReturnType<typeof setTimeout> | undefined;
+    const refreshSilently = () => {
+      if (debounceId) clearTimeout(debounceId);
+      debounceId = setTimeout(() => loadDashboardData(true), 500);
+    };
+
+    const channel = supabase
+      .channel('admin-dashboard-data')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, refreshSilently)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'occurrences' }, refreshSilently)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_events' }, refreshSilently)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'motoristas_posicao' }, refreshSilently)
+      .subscribe();
+
+    return () => {
+      if (debounceId) clearTimeout(debounceId);
+      supabase.removeChannel(channel);
+    };
+  }, [loadDashboardData]);
 
   if (loading) {
     return (

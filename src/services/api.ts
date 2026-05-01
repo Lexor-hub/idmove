@@ -721,37 +721,84 @@ class ApiService {
     return this.run(async () => {
       const ctx = await this.getContext();
       const today = todayIso();
-      let deliveriesQuery = supabase.from('deliveries').select('id,status,scheduled_date').eq('scheduled_date', today);
+      const activeSince = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+      let deliveriesQuery = supabase
+        .from('deliveries')
+        .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,created_at)')
+        .eq('scheduled_date', today)
+        .order('created_at', { ascending: false });
       let driversQuery = supabase.from('drivers').select('id,current_status').in('current_status', ['online', 'active', 'idle']);
       let occurrencesQuery = supabase
         .from('occurrences')
         .select('id')
-        .eq('status', 'PENDING')
-        .gte('created_at', `${today}T00:00:00`);
+        .gte('created_at', `${today}T00:00:00`)
+        .lte('created_at', `${today}T23:59:59`);
+      let positionsQuery = supabase
+        .from('v_motoristas_posicao')
+        .select('motorista_id,company_id,updated_at')
+        .gte('updated_at', activeSince);
 
       if (ctx.profile.role !== 'MASTER') {
         deliveriesQuery = deliveriesQuery.eq('company_id', ctx.profile.company_id);
         driversQuery = driversQuery.eq('company_id', ctx.profile.company_id);
         occurrencesQuery = occurrencesQuery.eq('company_id', ctx.profile.company_id);
+        positionsQuery = positionsQuery.eq('company_id', ctx.profile.company_id);
       }
 
-      const [{ data: deliveries, error: deliveriesError }, { data: drivers, error: driversError }, { data: occurrences, error: occurrencesError }] =
-        await Promise.all([deliveriesQuery, driversQuery, occurrencesQuery]);
+      const [
+        { data: deliveries, error: deliveriesError },
+        { data: drivers, error: driversError },
+        { data: occurrences, error: occurrencesError },
+        { data: positions, error: positionsError },
+      ] = await Promise.all([deliveriesQuery, driversQuery, occurrencesQuery, positionsQuery]);
 
       if (deliveriesError) throw deliveriesError;
       if (driversError) throw driversError;
       if (occurrencesError) throw occurrencesError;
+      if (positionsError) throw positionsError;
 
       const list = deliveries || [];
+      const activePositionDrivers = new Set((positions || []).map((position) => position.motorista_id));
       return {
         today_deliveries: {
           total: list.length,
           completed: list.filter((item) => item.status === 'DELIVERED').length,
-          pending: list.filter((item) => item.status !== 'DELIVERED').length,
+          pending: list.filter((item) => item.status === 'PENDING' || item.status === 'ASSIGNED').length,
+          in_progress: list.filter((item) => item.status === 'IN_TRANSIT').length,
+          failed: list.filter((item) => item.status === 'FAILED').length,
+          list: list.map((delivery) => this.mapDelivery(delivery)),
         },
         pending_occurrences: occurrences?.length || 0,
-        active_drivers: drivers?.length || 0,
+        active_drivers: Math.max(drivers?.length || 0, activePositionDrivers.size),
       };
+    });
+  }
+
+  async getRecentDeliveryEvents(limit = 5) {
+    return this.run(async () => {
+      const ctx = await this.getContext();
+      let query = supabase
+        .from('delivery_events')
+        .select('*, deliveries(nf_number,client_name), drivers(name)')
+        .order('created_at', { ascending: false })
+        .limit(limit);
+
+      if (ctx.profile.role !== 'MASTER') {
+        query = query.eq('company_id', ctx.profile.company_id);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+
+      return (data || []).map((event: any) => ({
+        id: String(event.id),
+        type: event.event_type || 'PENDING',
+        nf_number: event.deliveries?.nf_number || 'N/A',
+        client_name: event.deliveries?.client_name || 'Cliente',
+        driver_name: event.drivers?.name || 'Motorista',
+        description: event.description || event.event_type || 'Atualizacao registrada',
+        created_at: event.created_at,
+      }));
     });
   }
 
@@ -1256,11 +1303,55 @@ class ApiService {
     });
   }
 
-  async getDriverPerformanceReports() {
+  async getDriverPerformanceReports(filters?: { start_date?: string; end_date?: string; driver_id?: string | number }) {
     return this.run(async () => {
-      const { data, error } = await supabase.from('drivers').select('*, deliveries(id,status)');
+      const ctx = await this.getContext();
+      let driversQuery = supabase.from('drivers').select('id,name,company_id,current_status').order('name');
+
+      if (ctx.profile.role !== 'MASTER') {
+        driversQuery = driversQuery.eq('company_id', ctx.profile.company_id);
+      }
+      if (filters?.driver_id) {
+        driversQuery = driversQuery.eq('id', String(filters.driver_id));
+      }
+
+      const { data: drivers, error: driversError } = await driversQuery;
+      if (driversError) throw driversError;
+
+      const driverIds = (drivers || []).map((driver) => driver.id);
+      if (driverIds.length === 0) return [];
+
+      let deliveriesQuery = supabase
+        .from('deliveries')
+        .select('id,driver_id,status,scheduled_date')
+        .in('driver_id', driverIds);
+
+      if (filters?.start_date) deliveriesQuery = deliveriesQuery.gte('scheduled_date', filters.start_date);
+      if (filters?.end_date) deliveriesQuery = deliveriesQuery.lte('scheduled_date', filters.end_date);
+
+      const { data: deliveries, error } = await deliveriesQuery;
       if (error) throw error;
-      return data || [];
+
+      const byDriver = new Map<string, any[]>();
+      (deliveries || []).forEach((delivery: any) => {
+        const key = String(delivery.driver_id);
+        byDriver.set(key, [...(byDriver.get(key) || []), delivery]);
+      });
+
+      return (drivers || []).map((driver: any) => {
+        const driverDeliveries = byDriver.get(String(driver.id)) || [];
+        return {
+          ...driver,
+          driver_id: driver.id,
+          driver_name: driver.name,
+          total_deliveries: driverDeliveries.length,
+          completed_deliveries: driverDeliveries.filter((delivery) => delivery.status === 'DELIVERED').length,
+          pending_deliveries: driverDeliveries.filter((delivery) => delivery.status === 'PENDING' || delivery.status === 'ASSIGNED').length,
+          in_progress_deliveries: driverDeliveries.filter((delivery) => delivery.status === 'IN_TRANSIT').length,
+          failed_deliveries: driverDeliveries.filter((delivery) => delivery.status === 'FAILED').length,
+          deliveries: driverDeliveries,
+        };
+      });
     });
   }
 
@@ -1285,6 +1376,7 @@ class ApiService {
 
       // Write event to delivery_events
       await supabase.from('delivery_events').insert({
+        company_id: data.company_id || companyId,
         delivery_id: String(deliveryId),
         driver_id: String(driverId),
         event_type: 'ASSIGNED',
@@ -1320,6 +1412,7 @@ class ApiService {
 
       // Write event to delivery_events
       await supabase.from('delivery_events').insert({
+        company_id: data.company_id || companyId,
         delivery_id: String(deliveryId),
         driver_id: context.driverId || null,
         event_type: eventType || newStatus,
