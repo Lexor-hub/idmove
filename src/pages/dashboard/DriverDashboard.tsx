@@ -99,6 +99,8 @@ export const DriverDashboard = () => {
     const [occurrenceType, setOccurrenceType] = useState<'reentrega' | 'recusa' | 'avaria'>('reentrega');
     const [occurrenceDescription, setOccurrenceDescription] = useState('');
     const [reportingOccurrence, setReportingOccurrence] = useState(false);
+    const [occurrencePhoto, setOccurrencePhoto] = useState<{ file: File; dataUrl: string } | null>(null);
+    const occurrencePhotoInputRef = useRef<HTMLInputElement | null>(null);
 
     const [showDetailsModal, setShowDetailsModal] = useState(false);
     const [deliveryDetails, setDeliveryDetails] = useState<any>(null); // Para guardar os dados completos
@@ -399,15 +401,15 @@ export const DriverDashboard = () => {
                         volume: item.delivery_volume ?? 1,
                         value: Number(item.merchandise_value || 0),
                         status: item.has_receipt
-                            ? 'REALIZADA' 
+                            ? 'REALIZADA'
                             : item.status === 'DELIVERED'
-                            ? 'REALIZADA' 
+                            ? 'REALIZADA'
                             : item.status === 'IN_TRANSIT'
-                            ? 'EM_ANDAMENTO' 
+                            ? 'EM_ANDAMENTO'
                             : item.status === 'ASSIGNED'
-                            ? 'PENDENTE'
+                            ? 'REALIZADA'
                             : item.status === 'PENDING'
-                            ? 'PENDENTE' 
+                            ? 'PENDENTE'
                             : 'PROBLEMA',
                         hasReceipt: Boolean(item.has_receipt),
                         createdAt: item.created_at,
@@ -804,7 +806,20 @@ const handleDisableLocation = () => {
         setOccurrenceDelivery(delivery);
         setOccurrenceType('reentrega');
         setOccurrenceDescription('');
+        setOccurrencePhoto(null);
         setShowOccurrenceModal(true);
+    };
+
+    const handleOccurrencePhotoCapture = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                setOccurrencePhoto({ file, dataUrl: e.target?.result as string });
+            };
+            reader.readAsDataURL(file);
+        }
+        event.target.value = '';
     };
 
     const handleReportOccurrence = async () => {
@@ -824,6 +839,7 @@ const handleDisableLocation = () => {
                 description: occurrenceDescription.trim(),
                 latitude: lastKnownPosition?.coords.latitude,
                 longitude: lastKnownPosition?.coords.longitude,
+                photo: occurrencePhoto?.file,
             });
 
             if (!response.success) {
@@ -848,6 +864,7 @@ const handleDisableLocation = () => {
             setShowOccurrenceModal(false);
             setOccurrenceDelivery(null);
             setOccurrenceDescription('');
+            setOccurrencePhoto(null);
         } catch (error: any) {
             toast({
                 title: 'Erro ao reportar',
@@ -1454,8 +1471,14 @@ const handleDisableLocation = () => {
                 </DialogContent>
             </Dialog>
 
-            <Dialog open={showOccurrenceModal} onOpenChange={setShowOccurrenceModal}>
-                <DialogContent className="sm:max-w-md">
+            <Dialog
+                open={showOccurrenceModal}
+                onOpenChange={(open) => {
+                    setShowOccurrenceModal(open);
+                    if (!open) setOccurrencePhoto(null);
+                }}
+            >
+                <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto">
                     <DialogHeader>
                         <DialogTitle>Reportar Problema</DialogTitle>
                         <DialogDescription>
@@ -1484,6 +1507,58 @@ const handleDisableLocation = () => {
                                 placeholder="Ex: destinatário ausente, estabelecimento fechado, mercadoria recusada..."
                                 rows={4}
                             />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Foto (opcional)</label>
+                            <input
+                                type="file"
+                                accept="image/*"
+                                capture="environment"
+                                ref={occurrencePhotoInputRef}
+                                onChange={handleOccurrencePhotoCapture}
+                                className="hidden"
+                            />
+                            {occurrencePhoto ? (
+                                <div className="space-y-2">
+                                    <img
+                                        src={occurrencePhoto.dataUrl}
+                                        alt="Prévia da ocorrência"
+                                        className="rounded-md max-h-48 w-full object-contain border"
+                                    />
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() => occurrencePhotoInputRef.current?.click()}
+                                            disabled={reportingOccurrence}
+                                        >
+                                            Tirar outra
+                                        </Button>
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={() => setOccurrencePhoto(null)}
+                                            disabled={reportingOccurrence}
+                                        >
+                                            Remover
+                                        </Button>
+                                    </div>
+                                </div>
+                            ) : (
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="w-full gap-2"
+                                    onClick={() => occurrencePhotoInputRef.current?.click()}
+                                    disabled={reportingOccurrence}
+                                >
+                                    <Camera className="h-4 w-4" />
+                                    Adicionar foto da ocorrência
+                                </Button>
+                            )}
                         </div>
                     </div>
                     <DialogFooter>
