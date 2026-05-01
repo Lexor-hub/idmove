@@ -156,6 +156,51 @@ export const Users = () => {
         return;
       }
 
+      if (!formData.name.trim()) {
+        toast({
+          title: "Erro de Validação",
+          description: "O nome completo é obrigatório.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (!formData.email.trim()) {
+        toast({
+          title: "Erro de Validação",
+          description: "O email é obrigatório.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (!formData.username.trim()) {
+        toast({
+          title: "Erro de Validação",
+          description: "O nome de usuário é obrigatório.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (!formData.role) {
+        toast({
+          title: "Erro de Validação",
+          description: "Selecione um perfil de usuário.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (!formData.company_id) {
+        toast({
+          title: "Erro de Validação",
+          description: "Selecione uma empresa.",
+          variant: "destructive",
+        });
+        return;
+      }
+
       if (formData.role === 'CLIENT' && !formData.cpf.trim()) {
         toast({
           title: "Documento obrigatorio",
@@ -216,8 +261,44 @@ export const Users = () => {
 
   const handleUpdateUser = async () => {
     if (!editingUser) return;
-    
+
     try {
+      if (!formData.name.trim()) {
+        toast({
+          title: "Erro de Validação",
+          description: "O nome completo é obrigatório.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (!formData.email.trim()) {
+        toast({
+          title: "Erro de Validação",
+          description: "O email é obrigatório.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (!formData.username.trim()) {
+        toast({
+          title: "Erro de Validação",
+          description: "O nome de usuário é obrigatório.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (!formData.role) {
+        toast({
+          title: "Erro de Validação",
+          description: "Selecione um perfil de usuário.",
+          variant: "destructive",
+        });
+        return;
+      }
+
       if (formData.role === 'CLIENT' && !formData.cpf.trim()) {
         toast({
           title: "Documento obrigatorio",

@@ -381,6 +381,7 @@ class ApiService {
         },
       });
       if (signUpError) throw signUpError;
+      if (!signUpData.user?.id) throw new Error('Falha ao criar usuário de autenticação.');
 
       if (currentSession) {
         await supabase.auth.setSession({
@@ -402,7 +403,7 @@ class ApiService {
           status: payload.status || 'ATIVO',
           is_active: payload.is_active ?? true,
         })
-        .eq('auth_user_id', signUpData.user?.id || null)
+        .eq('auth_user_id', signUpData.user.id)
         .select()
         .single();
       if (profileError) throw profileError;
@@ -427,13 +428,23 @@ class ApiService {
         });
       }
 
-      return this.profileToUser(profile as ProfileRow, context.company);
+      let userCompany = context.company;
+      if (companyId && (!userCompany || userCompany.id !== companyId)) {
+        const { data: fetchedCompany } = await supabase
+          .from('companies')
+          .select('*')
+          .eq('id', String(companyId))
+          .maybeSingle();
+        userCompany = fetchedCompany as CompanyRow | null;
+      }
+
+      return this.profileToUser(profile as ProfileRow, userCompany);
     });
   }
 
   async updateUser(userId: string | number, payload: Record<string, any>) {
     return this.run(async () => {
-      const normalizedRole = payload.user_type || payload.role ? normalizeRole(payload.user_type || payload.role) : undefined;
+      const normalizedRole = (payload.user_type || payload.role) ? normalizeRole(payload.user_type || payload.role) : undefined;
       const document = normalizeBrazilianDocument(payload.cpf || payload.document);
       const updatePayload: Record<string, any> = {
         email: payload.email,
