@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet';
 import L, { LatLngTuple } from 'leaflet';
-import { apiService } from '@/services/api';
+import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { computeMovementStatus, getMovementStatusHex, MOVEMENT_STATUS_LABEL, MovementStatus } from '@/lib/driver-status';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -10,7 +10,7 @@ import { Clock, Truck } from 'lucide-react';
 const DEFAULT_CENTER: LatLngTuple = [-23.55052, -46.633308];
 
 interface DriverLocation {
-  driver_id: number;
+  driver_id: string;
   driver_name: string;
   latitude: number;
   longitude: number;
@@ -118,88 +118,108 @@ const Tracking = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchLocations = useCallback(async () => {
-    try {
-      console.log('[TrackingMap] Solicitando localizacoes atuais...');
-      const response = await apiService.getCurrentLocations();
-      console.log('[TrackingMap] Resposta da API', response);
-
-      if (response.success && Array.isArray(response.data)) {
-        const now = Date.now();
-
-        const parsed: DriverLocation[] = (response.data as Array<Record<string, unknown>>)
-          .map((raw) => {
-            const driver = raw as Record<string, unknown>;
-
-            const latitudeValue = driver['latitude'];
-            const longitudeValue = driver['longitude'];
-            const latitude =
-              latitudeValue === null || latitudeValue === undefined ? null : Number(latitudeValue);
-            const longitude =
-              longitudeValue === null || longitudeValue === undefined ? null : Number(longitudeValue);
-
-            if (
-              latitude === null ||
-              longitude === null ||
-              !Number.isFinite(latitude) ||
-              !Number.isFinite(longitude)
-            ) {
-              return null;
-            }
-
-            const driverId = driver['driver_id'];
-            if (driverId === undefined || driverId === null) {
-              return null;
-            }
-
-            const status = driver['status'] === 'active' ? 'active' : 'inactive';
-            const lastUpdate =
-              typeof driver['last_update'] === 'string'
-                ? (driver['last_update'] as string)
-                : new Date().toISOString();
-
-            const speedValue = Number(driver['speed'] ?? 0);
-            const safeSpeed = Number.isFinite(speedValue) ? speedValue : 0;
-
-            const location: DriverLocation = {
-              driver_id: Number(driverId),
-              driver_name: String(driver['driver_name'] ?? 'Motorista'),
-              latitude,
-              longitude,
-              last_update: lastUpdate,
-              status,
-              movementStatus: computeMovementStatus(
-                { speed: safeSpeed, last_update: lastUpdate },
-                now
-              ),
-              speed: safeSpeed,
-            };
-
-            console.log('[TrackingMap] Item recebido', location);
-            return location;
-          })
-          .filter((loc): loc is DriverLocation => Boolean(loc) && loc.status === 'active');
-
-        console.log('[TrackingMap] Itens apos filtro', { quantidade: parsed.length, amostra: parsed.slice(0, 3) });
-        setLocations(parsed);
-        setError(parsed.length ? null : 'Nenhum motorista com GPS ativo deste periodo.');
-      } else {
-        setError(response.error || 'Nao foi possivel carregar as localizacoes.');
-      }
-    } catch (err) {
-      console.error('Erro ao buscar localizacoes dos motoristas:', err);
-      setError('Nao foi possivel carregar as localizacoes agora.');
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
-    fetchLocations();
+    let isMounted = true;
 
-    const intervalId = setInterval(fetchLocations, 60000);
-    return () => clearInterval(intervalId);
-  }, [fetchLocations]);
+    const fetchAll = async () => {
+      try {
+        setIsLoading(true);
+        const { data, error } = await supabase
+          .from('v_motoristas_posicao')
+          .select('motorista_id, driver_name, latitude, longitude, updated_at');
+
+        if (!isMounted || error || !data) {
+          if (error) setError('Erro ao carregar posições');
+          return;
+        }
+
+        const now = Date.now();
+        setLocations(
+          data
+            .filter((r) => Number.isFinite(r.latitude) && Number.isFinite(r.longitude))
+            .map((r) => ({
+              driver_id: r.motorista_id,
+              driver_name: r.driver_name,
+              latitude: r.latitude,
+              longitude: r.longitude,
+              last_update: r.updated_at,
+              status: 'active' as const,
+              movementStatus: computeMovementStatus({ speed: undefined, last_update: r.updated_at }, now),
+              speed: 0,
+            }))
+        );
+        setError(null);
+        setIsLoading(false);
+      } catch (err) {
+        console.error('[TrackingMap] Erro ao buscar posições:', err);
+        if (isMounted) setError('Não foi possível carregar as localizações.');
+      }
+    };
+
+    fetchAll();
+
+    // Realtime subscription — escuta INSERT e UPDATE
+    const channel = supabase
+      .channel('rt_motoristas_posicao')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'motoristas_posicao' },
+        async (payload) => {
+          if (!isMounted) return;
+          const motoristaId = (payload.new as Record<string, unknown>)?.motorista_id as string
+                            || (payload.old as Record<string, unknown>)?.motorista_id as string;
+          if (!motoristaId) return;
+
+          // Re-fetch desta linha na view (converte geography → lat/lon)
+          const { data: row } = await supabase
+            .from('v_motoristas_posicao')
+            .select('motorista_id, driver_name, latitude, longitude, updated_at')
+            .eq('motorista_id', motoristaId)
+            .single();
+
+          if (!row || !isMounted) return;
+
+          const now = Date.now();
+          setLocations((prev) => {
+            const existing = prev.findIndex((l) => l.driver_id === motoristaId);
+            const updated = {
+              driver_id: row.motorista_id,
+              driver_name: row.driver_name,
+              latitude: row.latitude,
+              longitude: row.longitude,
+              last_update: row.updated_at,
+              status: 'active' as const,
+              movementStatus: computeMovementStatus({ speed: undefined, last_update: row.updated_at }, now),
+              speed: 0,
+            };
+            if (existing >= 0) {
+              const next = [...prev];
+              next[existing] = updated;
+              return next;
+            }
+            return [...prev, updated];
+          });
+        }
+      )
+      .subscribe();
+
+    // Re-calcular status "offline" a cada 30s (sem chamada de rede)
+    const offlineTimer = setInterval(() => {
+      setLocations((prev) => {
+        const now = Date.now();
+        return prev.map((l) => ({
+          ...l,
+          movementStatus: computeMovementStatus({ speed: l.speed, last_update: l.last_update }, now),
+        }));
+      });
+    }, 30_000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(offlineTimer);
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   useEffect(() => {
     if (error) {

@@ -3,22 +3,35 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ID Transporte - Sistema de Gestão de Entregas</title>
+    <title>ID MOVE - Sistema de Gestão de Entregas</title>
     <meta name="description" content="Sistema completo de gestão de entregas com rastreamento, digitalização de canhotos e relatórios para transportadoras" />
-    <meta name="author" content="ID Transporte" />
+    <meta name="author" content="ID MOVE" />
 
-    <meta property="og:title" content="ID Transporte - Sistema de Gestão de Entregas" />
+    <meta property="og:title" content="ID MOVE - Sistema de Gestão de Entregas" />
     <meta property="og:description" content="Sistema completo de gestão de entregas com rastreamento, digitalização de canhotos e relatórios para transportadoras" />
     <meta property="og:type" content="website" />
     <meta property="og:image" content="/src/assets/id-transporte-logo.jpg" />
 
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:site" content="@id_transporte" />
+    <meta name="twitter:site" content="@id_move" />
     <meta name="twitter:image" content="/src/assets/id-transporte-logo.jpg" />
   </head>
 
   <body>
     <div id="root"></div>
+    <script>
+      if (
+        ['localhost', '127.0.0.1'].includes(window.location.hostname) &&
+        'serviceWorker' in navigator
+      ) {
+        navigator.serviceWorker.getRegistrations().then((registrations) => {
+          registrations.forEach((registration) => registration.unregister());
+        });
+        if ('caches' in window) {
+          caches.keys().then((keys) => keys.forEach((key) => caches.delete(key)));
+        }
+      }
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

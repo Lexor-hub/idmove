@@ -100,8 +100,8 @@ export const Users = () => {
 
     // CORREÇÃO: Se o usuário for MASTER, busca todas as empresas.
     // Se for ADMIN ou outro, usa apenas a empresa do próprio usuário logado.
-    if (userRole === 'MASTER') {
-      try {
+    try {
+      if (userRole === 'MASTER') {
         const response = await apiService.getManagementCompanies();
         if (response.success && Array.isArray(response.data)) {
           // CORREÇÃO: Normaliza os dados da API para o tipo esperado pelo estado 'companies'.
@@ -120,29 +120,26 @@ export const Users = () => {
             variant: "destructive",
           });
         }
-      } catch (error) {
-        toast({
-          title: "Erro",
-          description: "Erro de rede ao carregar empresas",
-          variant: "destructive",
-        });
-      } finally {
-        // CORREÇÃO: O 'finally' foi movido para dentro do bloco 'if' para ser associado ao 'try...catch'.
-        setCompaniesLoading(false);
+      } else if (authUser?.company_id && authUser?.company_name) {
+        // Para ADMIN e outros, a única opção de empresa é a dele mesmo.
+        setCompanies([
+          {
+            id: String(authUser.company_id),
+            name: authUser.company_name,
+            // Adiciona outros campos com valores padrão para manter a consistência da interface
+            domain: authUser.company_domain || '',
+            email: '',
+            subscription_plan: '',
+          },
+        ]);
       }
-    } else if (authUser?.company_id && authUser?.company_name) {
-      // Para ADMIN e outros, a única opção de empresa é a dele mesmo.
-      setCompanies([
-        {
-          id: String(authUser.company_id),
-          name: authUser.company_name,
-          // Adiciona outros campos com valores padrão para manter a consistência da interface
-          domain: authUser.company_domain || '',
-          email: '',
-          subscription_plan: '',
-        },
-      ]);
-      // O loading é interrompido aqui para o caso de não ser MASTER
+    } catch (error) {
+      toast({
+        title: "Erro",
+        description: "Erro ao carregar empresas",
+        variant: "destructive",
+      });
+    } finally {
       setCompaniesLoading(false);
     }
   };
@@ -154,6 +151,15 @@ export const Users = () => {
         toast({
           title: "Erro de Validação",
           description: "A senha deve ter pelo menos 6 caracteres.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (formData.role === 'CLIENT' && !formData.cpf.trim()) {
+        toast({
+          title: "Documento obrigatorio",
+          description: "Informe o CPF ou CNPJ do cliente para vincular as entregas ao painel dele.",
           variant: "destructive",
         });
         return;
@@ -212,10 +218,20 @@ export const Users = () => {
     if (!editingUser) return;
     
     try {
+      if (formData.role === 'CLIENT' && !formData.cpf.trim()) {
+        toast({
+          title: "Documento obrigatorio",
+          description: "Informe o CPF ou CNPJ do cliente para manter as entregas vinculadas ao painel dele.",
+          variant: "destructive",
+        });
+        return;
+      }
+
       const normalizedStatus = (formData.status || 'ATIVO').toUpperCase() === 'INATIVO' ? 'INATIVO' : 'ATIVO';
       const updatePayload = {
         email: formData.email,
         full_name: formData.name,
+        username: formData.username,
         user_type: formData.role,
         cpf: formData.cpf ? formData.cpf.trim() : undefined,
         status: normalizedStatus,
@@ -449,13 +465,21 @@ export const Users = () => {
                 </Select>
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="cpf">CPF (Opcional)</Label>
+                <Label htmlFor="cpf">
+                  CPF/CNPJ {formData.role === 'CLIENT' ? '*' : '(Opcional)'}
+                </Label>
                 <Input
                   id="cpf"
                   value={formData.cpf}
                   onChange={(e) => setFormData(prev => ({ ...prev, cpf: e.target.value }))}
-                  placeholder="Digite o CPF"
+                  placeholder={formData.role === 'CLIENT' ? 'Digite o CPF ou CNPJ do cliente' : 'Digite o CPF ou CNPJ'}
+                  required={formData.role === 'CLIENT'}
                 />
+                {formData.role === 'CLIENT' && (
+                  <p className="text-xs text-muted-foreground">
+                    Este documento sera usado para vincular entregas e rastreamento ao cliente.
+                  </p>
+                )}
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="company">Empresa *</Label>
@@ -493,19 +517,14 @@ export const Users = () => {
       {/* Search and Filters */}
       <Card>
         <CardContent className="pt-6">
-          <div className="flex items-center gap-4">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Buscar usuários..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-10"
-              />
-            </div>
-            <Button variant="outline" size="icon">
-              <Filter className="h-4 w-4" />
-            </Button>
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Buscar usuários..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="pl-10"
+            />
           </div>
         </CardContent>
       </Card>
@@ -649,12 +668,21 @@ export const Users = () => {
               </Select>
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="edit-cpf">CPF (Opcional)</Label>
+              <Label htmlFor="edit-cpf">
+                CPF/CNPJ {formData.role === 'CLIENT' ? '*' : '(Opcional)'}
+              </Label>
               <Input
                 id="edit-cpf"
                 value={formData.cpf}
                 onChange={(e) => setFormData(prev => ({ ...prev, cpf: e.target.value }))}
+                placeholder="Digite o CPF ou CNPJ"
+                required={formData.role === 'CLIENT'}
               />
+              {formData.role === 'CLIENT' && (
+                <p className="text-xs text-muted-foreground">
+                  Este documento identifica o cliente nas entregas e no rastreamento.
+                </p>
+              )}
             </div>
           </div>
           <DialogFooter>

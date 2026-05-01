@@ -1,4 +1,4 @@
-# ID Transporte - Sistema Multi-Tenant
+# ID MOVE - Sistema Multi-Tenant
 
 Sistema de gestão de entregas com suporte a múltiplas empresas (multi-tenant).
 
@@ -69,15 +69,15 @@ VITE_REPORTS_API_URL=http://localhost:3006
 VITE_COMPANIES_API_URL=http://localhost:3007
 
 # Configurações do sistema
-VITE_APP_NAME=ID Transporte
+VITE_APP_NAME=ID MOVE
 VITE_APP_VERSION=2.0.0
 ```
 
 ### Estrutura de URLs
 
-- **Master Dashboard**: `https://admin.idtransportes.com`
-- **Empresa 1**: `https://empresa1.idtransportes.com`
-- **Empresa 2**: `https://empresa2.idtransportes.com`
+- **Master Dashboard**: `https://admin.idmove.com`
+- **Empresa 1**: `https://empresa1.idmove.com`
+- **Empresa 2**: `https://empresa2.idmove.com`
 
 ## 👥 Usuários de Teste
 
@@ -89,7 +89,7 @@ VITE_APP_VERSION=2.0.0
 ### Admin (Empresa)
 - **Usuário**: `admin`
 - **Senha**: `admin123`
-- **Empresa**: `idtransportes`
+- **Empresa**: `idmove`
 - **Acesso**: Dashboard Admin, Gestão de Usuários, Veículos, etc.
 
 ### Motorista
@@ -149,13 +149,13 @@ npm run preview
 
 ### Variáveis de Produção
 ```env
-VITE_AUTH_API_URL=https://api.idtransportes.com/auth
-VITE_DRIVERS_API_URL=https://api.idtransportes.com/drivers
-VITE_DELIVERIES_API_URL=https://api.idtransportes.com/deliveries
-VITE_RECEIPTS_API_URL=https://api.idtransportes.com/receipts
-VITE_TRACKING_API_URL=https://api.idtransportes.com/tracking
-VITE_REPORTS_API_URL=https://api.idtransportes.com/reports
-VITE_COMPANIES_API_URL=https://api.idtransportes.com/companies
+VITE_AUTH_API_URL=https://api.idmove.com/auth
+VITE_DRIVERS_API_URL=https://api.idmove.com/drivers
+VITE_DELIVERIES_API_URL=https://api.idmove.com/deliveries
+VITE_RECEIPTS_API_URL=https://api.idmove.com/receipts
+VITE_TRACKING_API_URL=https://api.idmove.com/tracking
+VITE_REPORTS_API_URL=https://api.idmove.com/reports
+VITE_COMPANIES_API_URL=https://api.idmove.com/companies
 ```
 
 ## 📚 Documentação

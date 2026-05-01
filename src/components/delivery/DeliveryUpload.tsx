@@ -171,6 +171,15 @@ interface Driver {
 
 const ALLOWED_FILE_EXTENSIONS = ['.xml', '.pdf', '.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif'];
 
+interface Client {
+  id: string;
+  name: string;
+  email?: string;
+  phone?: string;
+  document?: string;
+  address?: string;
+}
+
 interface DeliveryUploadProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -178,6 +187,8 @@ interface DeliveryUploadProps {
   initialData?: DeliveryUploadInitialData;
   // Propriedade adicionada para controlar a exibiï¿½ï¿½o do seletor de motorista.
   allowDriverSelection?: boolean;
+  // Novo prop: modo de operacao (admin para gerenciar todas entrega, driver para criar propria)
+  mode?: 'admin' | 'driver';
 }
 
 // ##########################################################################
@@ -461,7 +472,8 @@ export const DeliveryUpload: React.FC<DeliveryUploadProps> = ({
   onOpenChange,
   onSuccess,
   initialData,
-  allowDriverSelection = false // Valor padrï¿½o ï¿½ false
+  allowDriverSelection = false, // Valor padrï¿½o ï¿½ false
+  mode = 'admin' // Novo valor padrao
 }) => {
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -482,10 +494,17 @@ export const DeliveryUpload: React.FC<DeliveryUploadProps> = ({
   const hasCameraConsent = cameraPermissionState === 'granted';
   const [showCameraPermissionDialog, setShowCameraPermissionDialog] = useState(false);
   const [cameraPermissionLoading, setCameraPermissionLoading] = useState(false);
+  // Novo: estado para clientes e busca
+  const [clients, setClients] = useState<Client[]>([]);
+  const [selectedClientId, setSelectedClientId] = useState<string | undefined>(undefined);
+  const [clientSearchQuery, setClientSearchQuery] = useState('');
+  const [showNewClientForm, setShowNewClientForm] = useState(false);
+  const [newClientForm, setNewClientForm] = useState({ name: '', email: '', phone: '', document: '', address: '' });
+  const [loadingNewClient, setLoadingNewClient] = useState(false);
 
+  // Carregar motoristas se allowDriverSelection ou se estiver em modo driver
   useEffect(() => {
-    // Busca a lista de motoristas se a seleï¿½ï¿½o for permitida e o modal estiver aberto.
-    if (allowDriverSelection && open) {
+    if ((allowDriverSelection || mode === 'driver') && open) {
       const fetchDrivers = async () => {
         try {
           const response = await apiService.getDrivers({ status: 'active' });
@@ -514,7 +533,39 @@ export const DeliveryUpload: React.FC<DeliveryUploadProps> = ({
 
       fetchDrivers();
     }
-  }, [allowDriverSelection, open]);
+  }, [allowDriverSelection, mode, open]);
+
+  // Carregar clientes quando modal abrir
+  useEffect(() => {
+    if (open) {
+      const fetchClients = async () => {
+        try {
+          const response = await apiService.getClients({ search: clientSearchQuery });
+          if (response.success && Array.isArray(response.data)) {
+            const normalizedClients: Client[] = (response.data as Array<Record<string, unknown>>)
+              .map((rawClient) => {
+                const clientData = (rawClient ?? {}) as Record<string, unknown>;
+                return {
+                  id: String(clientData['id'] || ''),
+                  name: String(clientData['name'] || clientData['razao_social'] || ''),
+                  email: clientData['email'] ? String(clientData['email']) : undefined,
+                  phone: clientData['phone'] ? String(clientData['phone']) : undefined,
+                  document: clientData['document'] ? String(clientData['document']) : undefined,
+                  address: clientData['address'] ? String(clientData['address']) : undefined,
+                } as Client;
+              })
+              .filter((c) => c.id.length > 0);
+
+            setClients(normalizedClients);
+          }
+        } catch (error) {
+          console.error('Erro ao buscar clientes:', error);
+        }
+      };
+
+      fetchClients();
+    }
+  }, [open, clientSearchQuery]);
 
   useEffect(() => {
     if (!open) {
@@ -970,6 +1021,57 @@ const handleDocumentAIData = (input: DocumentAIParsedPayload) => {
     cameraInputRef.current?.click();
   };
 
+  // Handler para criar novo cliente
+  const handleCreateNewClient = async () => {
+    try {
+      setLoadingNewClient(true);
+      if (!newClientForm.name.trim()) {
+        toast({
+          title: 'Nome obrigatório',
+          description: 'Digite o nome do cliente',
+          variant: 'destructive'
+        });
+        return;
+      }
+
+      const response = await apiService.createClient({
+        name: newClientForm.name,
+        email: newClientForm.email || undefined,
+        phone: newClientForm.phone || undefined,
+        document: newClientForm.document || undefined,
+        address: newClientForm.address || undefined,
+      });
+
+      if (response.success && response.data) {
+        const newClient: Client = {
+          id: response.data.id,
+          name: response.data.name,
+          email: response.data.email,
+          phone: response.data.phone,
+          document: response.data.document,
+          address: response.data.address,
+        };
+        setClients([...clients, newClient]);
+        setSelectedClientId(newClient.id);
+        setShowNewClientForm(false);
+        setNewClientForm({ name: '', email: '', phone: '', document: '', address: '' });
+        toast({
+          title: 'Cliente criado',
+          description: `${newClient.name} foi adicionado com sucesso`
+        });
+      }
+    } catch (error) {
+      console.error('Erro ao criar cliente:', error);
+      toast({
+        title: 'Erro ao criar cliente',
+        description: (error as Error).message || 'Não foi possível criar o cliente',
+        variant: 'destructive'
+      });
+    } finally {
+      setLoadingNewClient(false);
+    }
+  };
+
 
 const handleSaveDelivery = async () => {
   try {
@@ -986,14 +1088,36 @@ const handleSaveDelivery = async () => {
         return;
     }
 
+    // Validar cliente se nao estiver em modo driver
+    if (mode !== 'driver' && !selectedClientId) {
+      toast({
+        title: 'Cliente obrigatório',
+        description: 'Por favor, selecione ou crie um cliente.',
+        variant: 'destructive'
+      });
+      setLoading(false);
+      return;
+    }
+
     // Usa driver_id do backend quando o usuario autenticado for motorista.
     const fallbackDriverUserId = user?.id ? String(user.id) : (user?.user_id ? String(user.user_id) : undefined);
-    const driverIdForPayload = allowDriverSelection 
-      ? selectedDriverUserId 
-      : (user?.user_type === 'DRIVER' || user?.user_type === 'MOTORISTA' ? fallbackDriverUserId : undefined);
 
-    if (allowDriverSelection && !driverIdForPayload) {
-      toast({ title: 'Motorista nÃ£o selecionado', description: 'Por favor, atribua a entrega a um motorista.', variant: 'destructive' });
+    let driverIdForPayload: string | undefined;
+
+    if (mode === 'driver') {
+      // Em modo driver, auto-preench com usuario logado
+      driverIdForPayload = fallbackDriverUserId;
+    } else {
+      // Em modo admin, usar seleção do select
+      driverIdForPayload = allowDriverSelection ? selectedDriverUserId : undefined;
+    }
+
+    if ((allowDriverSelection || mode === 'driver') && !driverIdForPayload) {
+      toast({
+        title: 'Motorista não selecionado',
+        description: 'Por favor, atribua a entrega a um motorista.',
+        variant: 'destructive'
+      });
       setLoading(false);
       return;
     };
@@ -1024,13 +1148,16 @@ const handleSaveDelivery = async () => {
         structured: structuredData,
         summary: summaryPayload,
         isSefazValid,
-        driver_id: driverIdForPayload, // Adiciona o driver_id ao payload
+        driver_id: driverIdForPayload,
+        client_id: selectedClientId,
+        // Em modo driver, setar status automaticamente para ASSIGNED
+        status: mode === 'driver' ? 'ASSIGNED' : undefined,
         file: uploadedFile,
     };
 
     console.log("Payload a ser enviado para a API:", payload);
-    
-    const response = await apiService.createDelivery(payload); // O mï¿½todo correto ï¿½ `createDelivery`
+
+    const response = await apiService.createDelivery(payload);
     if (response.success) {
       toast({
         title: 'Entrega cadastrada!',
@@ -1044,7 +1171,7 @@ const handleSaveDelivery = async () => {
     console.error('Erro ao salvar entrega', error);
     toast({
       title: 'Erro ao salvar',
-      description: (error as Error).message || 'NÃo foi possí­vel salvar a entrega. Tente novamente.',
+      description: (error as Error).message || 'Não foi possível salvar a entrega. Tente novamente.',
       variant: 'destructive'
     });
   } finally {
@@ -1060,6 +1187,10 @@ const handleSaveDelivery = async () => {
     setUploadedFile(null);
     setStructuredData(createEmptyStructuredData());
     setSelectedDriverUserId(undefined);
+    setSelectedClientId(undefined);
+    setClientSearchQuery('');
+    setShowNewClientForm(false);
+    setNewClientForm({ name: '', email: '', phone: '', document: '', address: '' });
   };
   
   const statusOptions = ['PENDENTE', 'IN_TRANSIT', 'DELIVERED', 'REFUSED', 'CANCELED'];
@@ -1189,23 +1320,146 @@ const handleSaveDelivery = async () => {
               </Button>
             </div>
 
-            {/* Seletor de Motorista (renderizado condicionalmente) */}
-            {allowDriverSelection && (
+            {/* Seletor de Cliente (novo) */}
+            {mode !== 'driver' && (
               <div className="space-y-2">
-                <h3 className="text-sm font-semibold text-muted-foreground">Atribuir a Motorista</h3>
-                <select
-                  className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  value={selectedDriverUserId || ''}
-                  onChange={(e) => setSelectedDriverUserId(e.target.value || undefined)}
-                  disabled={!isEditing || drivers.length === 0}
-                >
-                  <option value="" disabled>Selecione um motorista</option>
-                  {drivers.map((driver) => (
+                <h3 className="text-sm font-semibold text-muted-foreground">Cliente</h3>
+                {!showNewClientForm ? (
+                  <div className="space-y-2">
+                    <input
+                      type="text"
+                      placeholder="Buscar cliente..."
+                      value={clientSearchQuery}
+                      onChange={(e) => setClientSearchQuery(e.target.value)}
+                      disabled={!isEditing}
+                      className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    />
+                    <select
+                      className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      value={selectedClientId || ''}
+                      onChange={(e) => setSelectedClientId(e.target.value || undefined)}
+                      disabled={!isEditing}
+                    >
+                      <option value="" disabled>Selecione um cliente</option>
+                      {clients.map((client) => (
+                        <option key={client.id} value={client.id}>
+                          {client.name}
+                        </option>
+                      ))}
+                    </select>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowNewClientForm(true)}
+                      disabled={!isEditing}
+                      className="w-full"
+                    >
+                      <Plus className="h-4 w-4 mr-2" /> Criar novo cliente
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="space-y-3 border rounded-md p-4">
+                    <h4 className="text-sm font-medium">Novo Cliente</h4>
+                    <div className="space-y-2">
+                      <Label>Nome *</Label>
+                      <Input
+                        value={newClientForm.name}
+                        onChange={(e) => setNewClientForm({...newClientForm, name: e.target.value})}
+                        placeholder="Nome do cliente"
+                        disabled={loadingNewClient}
+                      />
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      <div className="space-y-2">
+                        <Label>CPF/CNPJ</Label>
+                        <Input
+                          value={newClientForm.document}
+                          onChange={(e) => setNewClientForm({...newClientForm, document: e.target.value})}
+                          placeholder="CPF/CNPJ"
+                          disabled={loadingNewClient}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Email</Label>
+                        <Input
+                          value={newClientForm.email}
+                          onChange={(e) => setNewClientForm({...newClientForm, email: e.target.value})}
+                          placeholder="email@example.com"
+                          type="email"
+                          disabled={loadingNewClient}
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Telefone</Label>
+                      <Input
+                        value={newClientForm.phone}
+                        onChange={(e) => setNewClientForm({...newClientForm, phone: e.target.value})}
+                        placeholder="(11) 99999-9999"
+                        disabled={loadingNewClient}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Endereço</Label>
+                      <Input
+                        value={newClientForm.address}
+                        onChange={(e) => setNewClientForm({...newClientForm, address: e.target.value})}
+                        placeholder="Endereço completo"
+                        disabled={loadingNewClient}
+                      />
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setShowNewClientForm(false);
+                          setNewClientForm({ name: '', email: '', phone: '', document: '', address: '' });
+                        }}
+                        disabled={loadingNewClient}
+                        className="flex-1"
+                      >
+                        Cancelar
+                      </Button>
+                      <Button
+                        size="sm"
+                        onClick={handleCreateNewClient}
+                        disabled={loadingNewClient}
+                        className="flex-1"
+                      >
+                        {loadingNewClient ? 'Criando...' : 'Criar Cliente'}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Seletor de Motorista (renderizado condicionalmente) */}
+            {(allowDriverSelection || mode === 'driver') && (
+              <div className="space-y-2">
+                <h3 className="text-sm font-semibold text-muted-foreground">
+                  {mode === 'driver' ? 'Motorista Atribuído' : 'Atribuir a Motorista'}
+                </h3>
+                {mode === 'driver' ? (
+                  <div className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm flex items-center">
+                    {user?.name || user?.username || 'Motorista'}
+                  </div>
+                ) : (
+                  <select
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={selectedDriverUserId || ''}
+                    onChange={(e) => setSelectedDriverUserId(e.target.value || undefined)}
+                    disabled={!isEditing || drivers.length === 0}
+                  >
+                    <option value="" disabled>Selecione um motorista</option>
+                    {drivers.map((driver) => (
                       <option key={driver.id} value={driver.userId ?? driver.id}>
-                      {driver.name}
-                    </option>
-                  ))}
-                </select>
+                        {driver.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
             )}
 

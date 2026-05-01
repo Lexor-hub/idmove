@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__plugin_supabase_supabase__list_projects",
+      "mcp__plugin_supabase_supabase__list_tables",
+      "mcp__plugin_supabase_supabase__list_migrations",
+      "mcp__plugin_supabase_supabase__apply_migration",
+      "mcp__plugin_supabase_supabase__execute_sql",
+      "mcp__plugin_supabase_supabase__get_logs",
+      "Bash(VITE_SUPABASE_URL=\"https://jmxckbbunoyrsxkaubmi.supabase.co\" VITE_SUPABASE_ANON_KEY=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpteGNrYmJ1bm95cnN4a2F1Ym1pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc2MDcyMDksImV4cCI6MjA5MzE4MzIwOX0.52m2GgS1dqV_7896DgvPCI6Yr-yBjroobs7RLSEb-Jw\" npx tsx setup-test-users.ts)",
+      "Bash(supabase --version)"
+    ]
+  }
+}

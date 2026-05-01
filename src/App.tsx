@@ -2,7 +2,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
@@ -11,6 +11,8 @@ import { Dashboard } from "@/pages/dashboard";
 import React, { Suspense } from "react";
 import Users from "./pages/dashboard/Users";
 import Vehicles from "./pages/dashboard/Vehicles";
+import { CreateDelivery } from "./pages/dashboard/CreateDelivery";
+import { UserManagement } from "./pages/dashboard/UserManagement";
 // Lazy load the Tracking component to prevent potential module conflicts
 const Tracking = React.lazy(() => import("./pages/dashboard/Tracking"));
 import NotFound from "./pages/NotFound";
@@ -112,15 +114,35 @@ const AppRoutes = () => {
           </ProtectedRoute>
         } 
       />
-      <Route 
-        path="/dashboard/receipts-report" 
+      <Route
+        path="/dashboard/receipts-report"
         element={
           <ProtectedRoute>
             <DashboardLayout>
               <ReceiptsReport />
             </DashboardLayout>
           </ProtectedRoute>
-        } 
+        }
+      />
+      <Route
+        path="/dashboard/entregas"
+        element={
+          <ProtectedRoute>
+            <DashboardLayout>
+              <CreateDelivery />
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/dashboard/gerenciamento-usuarios"
+        element={
+          <ProtectedRoute>
+            <DashboardLayout>
+              <UserManagement />
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
       />
       <Route path="*" element={<NotFound />} />
     </Routes>
@@ -133,9 +155,9 @@ const App = () => (
       <AuthProvider>
         <Toaster />
         <Sonner />
-        <BrowserRouter>
+        <HashRouter>
           <AppRoutes />
-        </BrowserRouter>
+        </HashRouter>
       </AuthProvider>
     </TooltipProvider>
   </QueryClientProvider>

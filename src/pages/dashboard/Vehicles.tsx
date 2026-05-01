@@ -141,11 +141,26 @@ const Vehicles: React.FC = () => {
 
   const handleDelete = async (vehicle: Vehicle) => {
     if (!window.confirm('Tem certeza que deseja excluir este veículo?')) return;
-    const response = await apiService.deleteVehicle(vehicle.id);
-    if (response?.success) {
-      fetchVehicles();
+
+    // Check if vehicle has linked deliveries
+    const deliveriesResponse = await apiService.getDeliveries({ vehicle_id: vehicle.id });
+    if (deliveriesResponse?.success && (deliveriesResponse.data as any[])?.length > 0) {
+      // Mark as INATIVO instead of deleting
+      const response = await apiService.updateVehicle(vehicle.id, { status: 'INATIVO' });
+      if (response?.success) {
+        alert('Veículo marcado como inativo (possui entregas vinculadas)');
+        fetchVehicles();
+      } else {
+        alert(response?.error || 'Erro ao marcar veículo como inativo');
+      }
     } else {
-      alert(response?.error || 'Erro ao excluir veículo');
+      // No linked deliveries, perform hard delete
+      const response = await apiService.deleteVehicle(vehicle.id);
+      if (response?.success) {
+        fetchVehicles();
+      } else {
+        alert(response?.error || 'Erro ao excluir veículo');
+      }
     }
   };
 
@@ -277,4 +292,5 @@ const Vehicles: React.FC = () => {
   );
 };
 
+export { Vehicles };
 export default Vehicles; 

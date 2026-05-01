@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ID Transporte Design System - Professional Transport Management */
+/* ID MOVE Design System - Professional Transport Management */
 
 @layer base {
   :root {
@@ -10,21 +10,21 @@
     --background: 0 0% 100%;
     --foreground: 210 15% 15%;
     
-    /* Transport Blue - Primary brand color */
-    --primary: 212 95% 48%;
+    /* ID MOVE Navy Blue - Primary brand color */
+    --primary: 212 100% 14%;
     --primary-foreground: 0 0% 100%;
-    --primary-light: 212 85% 65%;
-    --primary-dark: 212 95% 35%;
+    --primary-light: 212 90% 25%;
+    --primary-dark: 212 100% 10%;
     
     /* Success Green - For completed deliveries */
     --success: 142 70% 45%;
     --success-foreground: 0 0% 100%;
     --success-light: 142 60% 65%;
     
-    /* Warning Orange - For alerts and pending items */
-    --warning: 38 90% 55%;
+    /* ID MOVE Orange - For highlights and branding */
+    --warning: 27 91% 54%;
     --warning-foreground: 0 0% 100%;
-    --warning-light: 38 80% 70%;
+    --warning-light: 27 80% 65%;
     
     /* Danger Red - For errors and problems */
     --danger: 0 84% 60%;
@@ -88,7 +88,7 @@
     --background: 210 25% 8%;
     --foreground: 0 0% 98%;
     
-    --primary: 212 85% 65%;
+    --primary: 212 70% 60%;
     --primary-foreground: 0 0% 100%;
     --primary-light: 212 75% 75%;
     --primary-dark: 212 85% 45%;
@@ -97,7 +97,7 @@
     --success-foreground: 0 0% 100%;
     --success-light: 142 50% 70%;
     
-    --warning: 38 80% 65%;
+    --warning: 27 90% 65%;
     --warning-foreground: 0 0% 100%;
     --warning-light: 38 70% 75%;
     

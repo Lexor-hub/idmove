@@ -3,20 +3,47 @@ import { useNavigate } from 'react-router-dom';
 import { StatsCard } from '@/components/dashboard/StatsCard';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { 
-  Truck, 
-  Package, 
-  CheckCircle, 
-  AlertTriangle, 
-  Users, 
+import { Badge } from '@/components/ui/badge';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import {
+  Truck,
+  Package,
+  CheckCircle,
+  AlertTriangle,
+  Users,
   MapPin,
   BarChart3,
   FileText,
-  Search // Adicionado para o novo botão
+  Search, // Adicionado para o novo botão
+  AlertCircle
 } from 'lucide-react';
 import { apiService } from '@/services/api';
 import { useToast } from '@/hooks/use-toast';
 import { DeliveryUpload } from '@/components/delivery/DeliveryUpload';
+
+interface DriverLoadStatus {
+  id: string;
+  name: string;
+  nfsCarregadas: number;
+  nfsPendentes: number;
+  status: 'CARREGANDO' | 'EM_ROTA' | 'FINALIZADO';
+  deliveries: Array<{
+    id: string;
+    nf_number: string;
+    status: string;
+    client_name: string;
+  }>;
+}
+
+interface OccurrenceData {
+  id: string;
+  driver_name: string;
+  type: string;
+  created_at: string;
+  description: string;
+  next_scheduled_date?: string | null;
+}
 
 export const AdminDashboard = () => {
   const [stats, setStats] = useState({
@@ -28,6 +55,10 @@ export const AdminDashboard = () => {
   });
   const [loading, setLoading] = useState(true);
   const [showDeliveryUpload, setShowDeliveryUpload] = useState(false);
+  const [driverLoadStatuses, setDriverLoadStatuses] = useState<DriverLoadStatus[]>([]);
+  const [dailyOccurrences, setDailyOccurrences] = useState<OccurrenceData[]>([]);
+  const [selectedDriverModal, setSelectedDriverModal] = useState<DriverLoadStatus | null>(null);
+  const [recentActivity, setRecentActivity] = useState<any[]>([]);
   const { toast } = useToast();
   const navigate = useNavigate();
 
@@ -57,6 +88,9 @@ export const AdminDashboard = () => {
       } else {
         console.warn('[AdminDashboard] A resposta da API não foi bem-sucedida ou não continha dados.', response);
       }
+
+      // Carrega dados de carregamento do dia, ocorrências e atividade recente
+      await Promise.all([loadDriverLoadStatuses(), loadDailyOccurrences(), loadRecentActivity()]);
     } catch (error) {
       console.error('[AdminDashboard] 5. Ocorreu um erro na busca de dados:', error);
       toast({
@@ -67,6 +101,95 @@ export const AdminDashboard = () => {
     } finally {
       console.log('[AdminDashboard] 6. Finalizando carregamento.');
       setLoading(false);
+    }
+  };
+
+  const loadDriverLoadStatuses = async () => {
+    const today = new Date().toISOString().split('T')[0];
+    const response = await apiService.getDeliveries({ scheduled_date: today });
+
+    if (response.success && response.data) {
+      const deliveries = response.data as any[];
+
+      // Agrupa entregas por motorista
+      const byDriver = new Map<string, DriverLoadStatus>();
+
+      deliveries.forEach((delivery) => {
+        const driverId = delivery.driver_id || 'sem_motorista';
+        const driverName = delivery.driver_name || 'Sem motorista';
+
+        if (!byDriver.has(driverId)) {
+          byDriver.set(driverId, {
+            id: driverId,
+            name: driverName,
+            nfsCarregadas: 0,
+            nfsPendentes: 0,
+            status: 'CARREGANDO',
+            deliveries: [],
+          });
+        }
+
+        const driver = byDriver.get(driverId)!;
+        driver.deliveries.push(delivery);
+
+        if (delivery.status === 'ASSIGNED' || delivery.status === 'IN_TRANSIT') {
+          driver.nfsCarregadas++;
+          if (delivery.status === 'IN_TRANSIT') {
+            driver.status = 'EM_ROTA';
+          }
+        } else if (delivery.status === 'PENDING') {
+          driver.nfsPendentes++;
+        } else if (delivery.status === 'DELIVERED') {
+          driver.status = 'FINALIZADO';
+        }
+      });
+
+      setDriverLoadStatuses(Array.from(byDriver.values()));
+    }
+  };
+
+  const loadDailyOccurrences = async () => {
+    const today = new Date().toISOString().split('T')[0];
+    const response = await apiService.getOccurrences({ date: today });
+
+    if (response.success && response.data) {
+      const occurrences = (response.data as any[])
+        .slice(0, 5)
+        .map((occ: any) => ({
+          id: occ.id || '',
+          driver_name: occ.driver_name || 'Motorista',
+          type: occ.type || 'Desconhecido',
+          created_at: occ.created_at || new Date().toISOString(),
+          description: occ.description || '',
+          next_scheduled_date: occ.next_scheduled_date || null,
+        }));
+
+      setDailyOccurrences(occurrences);
+    }
+  };
+
+  const loadRecentActivity = async () => {
+    try {
+      const { supabase } = await import('@/integrations/supabase/client');
+      const { data, error } = await supabase
+        .from('delivery_events')
+        .select('*, deliveries(nf_number), drivers(name)')
+        .order('created_at', { ascending: false })
+        .limit(5);
+
+      if (!error && data) {
+        const activities = (data as any[]).map((event: any) => ({
+          id: event.id,
+          type: event.event_type,
+          nf_number: event.deliveries?.nf_number || 'N/A',
+          driver_name: event.drivers?.name || 'Motorista',
+          description: event.description || event.event_type,
+          created_at: event.created_at,
+        }));
+        setRecentActivity(activities);
+      }
+    } catch (err) {
+      console.error('Erro ao carregar atividade recente:', err);
     }
   };
 
@@ -96,7 +219,7 @@ export const AdminDashboard = () => {
       </div>
 
       {/* Stats Grid */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 max-w-full overflow-x-auto">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5 max-w-full overflow-x-auto">
         <StatsCard
           title="Total de Entregas"
           value={stats.totalEntregas}
@@ -124,6 +247,13 @@ export const AdminDashboard = () => {
           icon={AlertTriangle}
           description="Problemas reportados"
           variant="danger"
+        />
+        <StatsCard
+          title="Motoristas Ativos"
+          value={stats.motoristasAtivos}
+          icon={Users}
+          description="Online agora"
+          variant="default"
         />
       </div>
 
@@ -194,42 +324,158 @@ export const AdminDashboard = () => {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="space-y-4">
-              <div className="flex items-center gap-3 p-3 rounded-lg bg-success/5 border border-success/20">
-                <div className="w-2 h-2 bg-success rounded-full" />
-                <div className="flex-1">
-                  <p className="text-sm font-medium">Entrega realizada</p>
-                  <p className="text-xs text-muted-foreground">NF 12345 - Cliente ABC - 14:30</p>
-                </div>
+            {recentActivity.length > 0 ? (
+              <div className="space-y-4">
+                {recentActivity.map((activity) => {
+                  const typeColors: Record<string, { bg: string; dot: string }> = {
+                    DELIVERED: { bg: 'success/5', dot: 'bg-success' },
+                    IN_TRANSIT: { bg: 'warning/5', dot: 'bg-warning' },
+                    ASSIGNED: { bg: 'primary/5', dot: 'bg-primary' },
+                    FAILED: { bg: 'danger/5', dot: 'bg-danger' },
+                    PENDING: { bg: 'secondary/5', dot: 'bg-secondary' },
+                  };
+                  const colors = typeColors[activity.type] || typeColors.PENDING;
+
+                  return (
+                    <div key={activity.id} className={`flex items-center gap-3 p-3 rounded-lg bg-${colors.bg} border border-${colors.bg.split('/')[0]}/20`}>
+                      <div className={`w-2 h-2 ${colors.dot} rounded-full`} />
+                      <div className="flex-1">
+                        <p className="text-sm font-medium">{activity.description}</p>
+                        <p className="text-xs text-muted-foreground">NF {activity.nf_number} - {activity.driver_name} - {new Date(activity.created_at).toLocaleTimeString('pt-BR')}</p>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-              
-              <div className="flex items-center gap-3 p-3 rounded-lg bg-warning/5 border border-warning/20">
-                <div className="w-2 h-2 bg-warning rounded-full" />
-                <div className="flex-1">
-                  <p className="text-sm font-medium">Motorista iniciou rota</p>
-                  <p className="text-xs text-muted-foreground">João Silva - Rota 001 - 08:00</p>
-                </div>
+            ) : (
+              <div className="py-8 text-center text-muted-foreground">
+                Nenhuma atividade registrada
               </div>
-              
-              <div className="flex items-center gap-3 p-3 rounded-lg bg-primary/5 border border-primary/20">
-                <div className="w-2 h-2 bg-primary rounded-full" />
-                <div className="flex-1">
-                  <p className="text-sm font-medium">Novo canhoto processado</p>
-                  <p className="text-xs text-muted-foreground">OCR concluído - NF 54321 - 13:45</p>
-                </div>
-              </div>
-              
-              <div className="flex items-center gap-3 p-3 rounded-lg bg-danger/5 border border-danger/20">
-                <div className="w-2 h-2 bg-danger rounded-full" />
-                <div className="flex-1">
-                  <p className="text-sm font-medium">Ocorrência reportada</p>
-                  <p className="text-xs text-muted-foreground">Destinatário ausente - NF 98765 - 12:15</p>
-                </div>
-              </div>
-            </div>
+            )}
           </CardContent>
         </Card>
       </div>
+
+      {/* Carregamento do Dia */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Truck className="h-5 w-5" />
+            Carregamento do Dia
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {driverLoadStatuses.length > 0 ? (
+            <div className="grid gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
+              {driverLoadStatuses.map((driver) => {
+                const statusColors = {
+                  CARREGANDO: { bg: 'bg-yellow-100', text: 'text-yellow-800', label: 'Carregando' },
+                  EM_ROTA: { bg: 'bg-blue-100', text: 'text-blue-800', label: 'Em Rota' },
+                  FINALIZADO: { bg: 'bg-green-100', text: 'text-green-800', label: 'Finalizado' },
+                };
+                const colors = statusColors[driver.status];
+
+                return (
+                  <div
+                    key={driver.id}
+                    className="p-4 rounded-lg border border-border bg-card hover:shadow-md transition-shadow"
+                  >
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="flex-1">
+                        <h3 className="font-semibold text-sm">{driver.name}</h3>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {driver.nfsCarregadas} carregadas / {driver.nfsPendentes} pendentes
+                        </p>
+                      </div>
+                      <Badge className={`${colors.bg} ${colors.text}`}>
+                        {colors.label}
+                      </Badge>
+                    </div>
+
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full"
+                      onClick={() => setSelectedDriverModal(driver)}
+                    >
+                      Ver NFs
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="py-8 text-center text-muted-foreground">
+              Nenhum carregamento registrado para hoje
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Tabela de Ocorrências do Dia */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <AlertTriangle className="h-5 w-5" />
+            Ocorrências do Dia (Últimas 5)
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {dailyOccurrences.length > 0 ? (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Motorista</TableHead>
+                    <TableHead>Tipo</TableHead>
+                    <TableHead>Horário</TableHead>
+                    <TableHead>Reentrega</TableHead>
+                    <TableHead>Descrição</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {dailyOccurrences.map((occurrence) => {
+                    const isReentrega = occurrence.type?.toLowerCase().includes('reentrega');
+                    const isRefusal = occurrence.type?.toLowerCase().includes('recusa') ||
+                                     occurrence.type?.toLowerCase().includes('avaria');
+                    const iconColor = isReentrega ? 'text-yellow-600' : isRefusal ? 'text-red-600' : 'text-gray-600';
+
+                    return (
+                      <TableRow key={occurrence.id} className="hover:bg-muted/30">
+                        <TableCell className="font-medium">{occurrence.driver_name}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <AlertCircle className={`w-4 h-4 ${iconColor}`} />
+                            {occurrence.type}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground">
+                          {new Date(occurrence.created_at).toLocaleTimeString('pt-BR', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground">
+                          {occurrence.next_scheduled_date
+                            ? new Date(`${occurrence.next_scheduled_date}T00:00:00`).toLocaleDateString('pt-BR')
+                            : '-'}
+                        </TableCell>
+                        <TableCell className="max-w-xs truncate text-sm">
+                          {occurrence.description}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          ) : (
+            <div className="py-8 text-center text-muted-foreground">
+              Nenhuma ocorrência registrada para hoje
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* System Status */}
       <Card>
@@ -238,28 +484,28 @@ export const AdminDashboard = () => {
         </CardHeader>
         <CardContent>
           <div className="grid gap-4 md:grid-cols-3">
-            <div className="flex items-center justify-between p-4 rounded-lg bg-success/10 border border-success/20">
+            <div className="flex items-center justify-between p-4 rounded-lg bg-secondary/10 border border-secondary/20">
               <div>
                 <p className="font-medium">API de Rastreamento</p>
-                <p className="text-sm text-muted-foreground">Operacional</p>
+                <p className="text-sm text-muted-foreground">Não monitorado</p>
               </div>
-              <div className="w-3 h-3 bg-success rounded-full animate-pulse" />
+              <div className="w-3 h-3 bg-secondary rounded-full" />
             </div>
-            
-            <div className="flex items-center justify-between p-4 rounded-lg bg-success/10 border border-success/20">
+
+            <div className="flex items-center justify-between p-4 rounded-lg bg-secondary/10 border border-secondary/20">
               <div>
                 <p className="font-medium">Processamento OCR</p>
-                <p className="text-sm text-muted-foreground">Operacional</p>
+                <p className="text-sm text-muted-foreground">Não monitorado</p>
               </div>
-              <div className="w-3 h-3 bg-success rounded-full animate-pulse" />
+              <div className="w-3 h-3 bg-secondary rounded-full" />
             </div>
-            
-            <div className="flex items-center justify-between p-4 rounded-lg bg-success/10 border border-success/20">
+
+            <div className="flex items-center justify-between p-4 rounded-lg bg-secondary/10 border border-secondary/20">
               <div>
                 <p className="font-medium">Base de Dados</p>
-                <p className="text-sm text-muted-foreground">Operacional</p>
+                <p className="text-sm text-muted-foreground">Não monitorado</p>
               </div>
-              <div className="w-3 h-3 bg-success rounded-full animate-pulse" />
+              <div className="w-3 h-3 bg-secondary rounded-full" />
             </div>
           </div>
         </CardContent>
@@ -280,6 +526,53 @@ export const AdminDashboard = () => {
           setShowDeliveryUpload(false);
         }}
       />
+
+      {/* Modal de NFs do Motorista */}
+      {selectedDriverModal && (
+        <Dialog open={!!selectedDriverModal} onOpenChange={() => setSelectedDriverModal(null)}>
+          <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Entregas - {selectedDriverModal.name}</DialogTitle>
+            </DialogHeader>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>NF</TableHead>
+                    <TableHead>Cliente</TableHead>
+                    <TableHead>Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {selectedDriverModal.deliveries.map((delivery) => {
+                    const statusMap: Record<string, { label: string; bg: string; text: string }> = {
+                      PENDING: { label: 'Pendente', bg: 'bg-yellow-100', text: 'text-yellow-800' },
+                      ASSIGNED: { label: 'Atribuída', bg: 'bg-blue-100', text: 'text-blue-800' },
+                      IN_TRANSIT: { label: 'Em Rota', bg: 'bg-orange-100', text: 'text-orange-800' },
+                      DELIVERED: { label: 'Entregue', bg: 'bg-green-100', text: 'text-green-800' },
+                      FAILED: { label: 'Falha', bg: 'bg-red-100', text: 'text-red-800' },
+                      CANCELLED: { label: 'Cancelada', bg: 'bg-gray-100', text: 'text-gray-800' },
+                    };
+                    const statusInfo = statusMap[delivery.status] || statusMap.PENDING;
+
+                    return (
+                      <TableRow key={delivery.id}>
+                        <TableCell className="font-medium">{delivery.nf_number}</TableCell>
+                        <TableCell>{delivery.client_name}</TableCell>
+                        <TableCell>
+                          <Badge className={`${statusInfo.bg} ${statusInfo.text}`}>
+                            {statusInfo.label}
+                          </Badge>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 };

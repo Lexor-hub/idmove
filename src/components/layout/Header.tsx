@@ -138,7 +138,7 @@ export const Header = () => {
               <Truck className="h-6 w-6 text-white" />
             </div>
             <div className="hidden sm:block">
-              <h1 className="text-xl font-bold text-white">ID Transporte</h1>
+              <h1 className="text-xl font-bold text-white">ID MOVE</h1>
               <p className="text-primary-light text-sm">
                 {company ? company.name : 'Sistema de Gestão de Entregas'}
               </p>

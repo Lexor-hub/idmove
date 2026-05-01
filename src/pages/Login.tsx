@@ -16,6 +16,9 @@ interface Company {
   domain: string;
 }
 
+const errorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
+
 const Login: React.FC = () => {
   const { login, selectCompany, authStep, loading } = useAuth();
   const { toast } = useToast();
@@ -37,10 +40,10 @@ const Login: React.FC = () => {
       if (response.success && response.data) {
         setCompanies(response.data);
       } else {
-        setError('Erro ao carregar empresas');
+        setError(response.error || 'Erro ao carregar empresas');
       }
     } catch (error) {
-      setError('Erro ao carregar empresas');
+      setError(errorMessage(error, 'Erro ao carregar empresas'));
     } finally {
       setCompaniesLoading(false);
     }
@@ -53,7 +56,7 @@ const Login: React.FC = () => {
     try {
       await login(credentials);
     } catch (error) {
-      setError('Credenciais inválidas');
+      setError(errorMessage(error, 'Erro no login'));
     }
   };
 
@@ -61,7 +64,7 @@ const Login: React.FC = () => {
     try {
       await selectCompany(companyId);
     } catch (error) {
-      setError('Erro ao selecionar empresa');
+      setError(errorMessage(error, 'Erro ao selecionar empresa'));
     }
   };
 

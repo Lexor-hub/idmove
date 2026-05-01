@@ -1,4 +1,8 @@
-﻿import { getBaseUrl } from '@/config/api';
+import { supabase, requireSupabaseConfig } from '@/integrations/supabase/client';
+import type { CompanyRow, DeliveryStatus, DriverStatus, ProfileRow } from '@/integrations/supabase/types';
+import { buildRetryDeliveryPayload, getNextScheduledDate } from '@/lib/delivery-attempts';
+import { normalizeBrazilianDocument } from '@/lib/documents';
+import { normalizeRole } from '@/lib/roles';
 
 export type ApiResponse<T> = { success: true; data: T } | { success: false; error: string };
 
@@ -12,291 +16,1421 @@ export type DriverLocationPayload = {
   delivery_id?: string | number | null;
 };
 
-export type DriverStatus =
-  | 'online'
-  | 'offline'
-  | 'idle'
-  | 'active'
-  | 'inactive'
-  | 'busy'
-  | 'available';
-
 export type TrackingHistoryFilters = {
   start_date?: string;
   end_date?: string;
 };
-function safeJsonParse(text: string) {
-  try { return JSON.parse(text); } catch { return null; }
-}
+
+type CurrentContext = {
+  profile: ProfileRow;
+  company: CompanyRow | null;
+  driverId: string | null;
+  clientId: string | null;
+};
+
+type AuthUserContext = {
+  id: string;
+  email?: string | null;
+  user_metadata?: Record<string, any>;
+};
+
+type ApiDelivery = Record<string, any>;
+
+const normalizeDeliveryStatus = (status?: string | null): DeliveryStatus => {
+  const map: Record<string, DeliveryStatus> = {
+    PENDING: 'PENDING',
+    PENDENTE: 'PENDING',
+    ASSIGNED: 'ASSIGNED',
+    IN_TRANSIT: 'IN_TRANSIT',
+    EM_ANDAMENTO: 'IN_TRANSIT',
+    DELIVERED: 'DELIVERED',
+    REALIZADA: 'DELIVERED',
+    FAILED: 'FAILED',
+    PROBLEMA: 'FAILED',
+    REFUSED: 'FAILED',
+    CANCELED: 'CANCELLED',
+    CANCELLED: 'CANCELLED',
+  };
+  return map[String(status || '').toUpperCase()] || 'PENDING';
+};
+
+const asNumber = (value: unknown, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const todayIso = () => new Date().toISOString().slice(0, 10);
+
+const responseError = (error: unknown) => {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  if (error && typeof error === 'object') {
+    const supabaseError = error as { message?: unknown; details?: unknown; hint?: unknown; code?: unknown };
+    const parts = [supabaseError.message, supabaseError.details, supabaseError.hint, supabaseError.code]
+      .filter((part): part is string => typeof part === 'string' && part.trim().length > 0);
+    if (parts.length > 0) return parts.join(' ');
+  }
+  return 'Erro interno';
+};
+
+const publicUrl = (bucket: string, path?: string | null) => {
+  if (!path) return null;
+  return supabase.storage.from(bucket).getPublicUrl(path).data.publicUrl;
+};
 
 class ApiService {
-  private getToken(): string | null { return localStorage.getItem('id_transporte_token') || localStorage.getItem('temp_token'); }
-  private getAuthHeader(): Record<string, string> { const t = this.getToken(); return t ? { Authorization: `Bearer ${t}` } : {}; }
+  private contextCache: CurrentContext | null = null;
 
-  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
+  private async run<T>(operation: () => Promise<T>): Promise<ApiResponse<T>> {
     try {
-      const baseUrl = getBaseUrl(endpoint);
-      const fullUrl = `${baseUrl}${endpoint}`;
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        ...this.getAuthHeader(),
-        ...(options.headers as Record<string, string> || {}),
-      };
-      if (options.body instanceof FormData) delete headers['Content-Type'];
-      const res = await fetch(fullUrl, { ...options, headers });
-      const text = await res.text();
-      const data = safeJsonParse(text) ?? text;
-      if (!res.ok) {
-        const err = (data && typeof data === 'object' && 'error' in data) ? (data as any).error : `HTTP ${res.status}`;
-        return { success: false, error: String(err) };
+      requireSupabaseConfig();
+      const data = await operation();
+      return { success: true, data };
+    } catch (error) {
+      console.error('[SupabaseApi]', error);
+      return { success: false, error: responseError(error) };
+    }
+  }
+
+  private async getContext(force = false, authUser?: AuthUserContext): Promise<CurrentContext> {
+    if (this.contextCache && !force) return this.contextCache;
+
+    let currentUser = authUser;
+    if (!currentUser) {
+      const { data: authData, error: authError } = await supabase.auth.getUser();
+      if (authError || !authData.user) {
+        throw new Error('Sessao expirada. Faca login novamente.');
       }
-      if (data && typeof data === 'object' && 'success' in data) return data as ApiResponse<T>;
-      return { success: true, data: data as T };
-    } catch (e) {
-      return { success: false, error: e instanceof Error ? e.message : 'Erro de conexao' };
+      currentUser = authData.user;
     }
-  }
 
-  async getCurrentLocations() { return this.request<Array<any>>('/api/tracking/drivers/current-locations'); }
-  async sendDriverLocation(payload: DriverLocationPayload) {
-    const body: Record<string, unknown> = {
-      driver_id: String(payload.driver_id),
-      latitude: payload.latitude,
-      longitude: payload.longitude,
+    let { data: profile, error: profileError } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('auth_user_id', currentUser.id)
+      .maybeSingle();
+
+    if (profileError) throw profileError;
+    if (!profile) {
+      const { count, error: countError } = await supabase
+        .from('profiles')
+        .select('id', { count: 'exact', head: true });
+
+      if (countError) throw countError;
+      if ((count ?? 0) > 0) {
+        throw new Error('Perfil nao encontrado no Supabase. Crie um profile para este usuario.');
+      }
+
+      const fullName =
+        currentUser.user_metadata?.full_name ||
+        currentUser.user_metadata?.name ||
+        currentUser.email ||
+        'Master';
+
+      const { data: bootstrapProfile, error: bootstrapError } = await supabase
+        .from('profiles')
+        .insert({
+          auth_user_id: currentUser.id,
+          company_id: null,
+          username: currentUser.email || currentUser.id,
+          email: currentUser.email || '',
+          full_name: fullName,
+          role: 'MASTER',
+          status: 'ATIVO',
+          is_active: true,
+        })
+        .select('*')
+        .single();
+
+      if (bootstrapError) throw bootstrapError;
+      profile = bootstrapProfile;
+    }
+
+    const { data: company } = profile.company_id
+      ? await supabase.from('companies').select('*').eq('id', profile.company_id).maybeSingle()
+      : { data: null };
+
+    const [{ data: driver }, { data: client }] = await Promise.all([
+      supabase.from('drivers').select('id').eq('profile_id', profile.id).maybeSingle(),
+      supabase.from('clients').select('id').eq('profile_id', profile.id).maybeSingle(),
+    ]);
+
+    this.contextCache = {
+      profile: profile as ProfileRow,
+      company: (company as CompanyRow | null) || null,
+      driverId: driver?.id || null,
+      clientId: client?.id || null,
     };
-    if (typeof payload.accuracy === 'number') body.accuracy = payload.accuracy;
-    if (typeof payload.speed === 'number') body.speed = payload.speed;
-    if (typeof payload.heading === 'number') body.heading = payload.heading;
-    if (payload.delivery_id !== undefined && payload.delivery_id !== null) body.delivery_id = payload.delivery_id;
-    return this.request<any>('/api/tracking/location', { method: 'POST', body: JSON.stringify(body) });
+
+    return this.contextCache;
   }
 
-  async getTrackingHistory(driverId: string | number, filters?: TrackingHistoryFilters) {
-    const params = new URLSearchParams();
-    if (filters?.start_date) params.append('start_date', filters.start_date);
-    if (filters?.end_date) params.append('end_date', filters.end_date);
-    const query = params.toString();
-    const driver = encodeURIComponent(String(driverId));
-    const url = query
-      ? `/api/tracking/drivers/${driver}/history?${query}`
-      : `/api/tracking/drivers/${driver}/history`;
-    return this.request<Array<any>>(url);
-  }
-
-  async updateDriverStatus(driverId: string | number, status: DriverStatus) {
-    const driver = encodeURIComponent(String(driverId));
-    return this.request(`/api/tracking/drivers/${driver}/status`, {
-      method: 'PUT',
-      body: JSON.stringify({ status }),
-    });
-  }
-
-  async getDeliveries(filters?: Record<string, string>): Promise<ApiResponse<ApiDelivery[]>> {
-    const queryParams = filters && Object.keys(filters).length
-      ? `?${new URLSearchParams(filters).toString()}`
-      : '';
-
-    return this.request<ApiDelivery[]>(`/api/deliveries${queryParams}`);
-  }
-
-  async getDelivery(deliveryId: string | number): Promise<ApiResponse<ApiDelivery>> {
-    const id = encodeURIComponent(String(deliveryId));
-    return this.request<ApiDelivery>(`/api/deliveries/${id}`);
-  }
-
-  async getCanhotos(filters?: Record<string, string>) {
-    const queryParams = filters && Object.keys(filters).length
-      ? `?${new URLSearchParams(filters).toString()}`
-      : '';
-    return this.request(`/api/reports/canhotos${queryParams}`);
-  }
-
-  async getAuthCompanies() {
-    return this.request('/api/auth/companies');
-  }
-
-  // Management/service companies (management UI) - hits the companies service
-  async getManagementCompanies() {
-    return this.request('/api/companies');
-  }
-
-  // Backwards-compatible shim: prefer explicit methods getAuthCompanies or getManagementCompanies
-  async getCompanies() {
-    console.warn('getCompanies() is ambiguous. Use getAuthCompanies() for login or getManagementCompanies() for management.');
-    return this.getManagementCompanies();
-  }
-
-  async getDrivers(filters?: Record<string, string>) {
-    const queryParams = filters && Object.keys(filters).length
-      ? `?${new URLSearchParams(filters).toString()}`
-      : '';
-    return this.request(`/api/drivers${queryParams}`);
-  }
-
-  async getDashboardKPIs() {
-    return this.request('/api/dashboard/kpis');
-  }
-
-  async getSecureFile(url: string): Promise<string | null> {
-    try {
-      const headers = this.getAuthHeader();
-      const res = await fetch(url, { headers });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const blob = await res.blob();
-      return URL.createObjectURL(blob);
-    } catch (err) {
-      console.error('getSecureFile error', err);
-      return null;
+  private async companyId() {
+    const context = await this.getContext();
+    if (!context.profile.company_id && context.profile.role !== 'MASTER') {
+      throw new Error('Usuario sem empresa vinculada.');
     }
+    return context.profile.company_id;
   }
 
-  // Authentication helpers
+  private profileToUser(profile: ProfileRow, company?: CompanyRow | null, driverId?: string | null, clientId?: string | null) {
+    return {
+      id: profile.id,
+      user_id: profile.auth_user_id || profile.id,
+      username: profile.username,
+      email: profile.email,
+      full_name: profile.full_name,
+      name: profile.full_name,
+      role: profile.role,
+      user_type: profile.role,
+      cpf: profile.cpf || undefined,
+      status: profile.status,
+      is_active: profile.is_active,
+      company_id: profile.company_id || undefined,
+      company_name: company?.name,
+      company_domain: company?.domain || undefined,
+      driver_id: driverId || undefined,
+      client_id: clientId || undefined,
+      created_at: profile.created_at,
+      updated_at: profile.updated_at,
+    };
+  }
+
+  private mapDelivery(raw: ApiDelivery): ApiDelivery {
+    const driver = Array.isArray(raw.drivers) ? raw.drivers[0] : raw.drivers;
+    const client = Array.isArray(raw.clients) ? raw.clients[0] : raw.clients;
+    const receipts = Array.isArray(raw.delivery_receipts)
+      ? raw.delivery_receipts
+      : raw.delivery_receipts
+        ? [raw.delivery_receipts]
+        : [];
+    const receipt = receipts[0];
+    const receiptUrl = receipt?.file_url || publicUrl('receipts', receipt?.file_path);
+
+    return {
+      ...raw,
+      id: String(raw.id),
+      client_name: raw.client_name || client?.name || raw.client_name_extracted || 'Cliente',
+      client_name_extracted: raw.client_name_extracted || raw.client_name || client?.name || 'Cliente',
+      client_address: raw.client_address || raw.delivery_address,
+      driver_name: driver?.name || 'Sem motorista',
+      driver_id: raw.driver_id || null,
+      vehicle_id: raw.vehicle_id || null,
+      merchandise_value: String(raw.merchandise_value ?? 0),
+      has_receipt: receipts.length > 0,
+      receipt_id: receipt?.id || null,
+      receipt_image_url: receiptUrl,
+      image_url: receiptUrl,
+      delivery_date: raw.delivered_at || raw.updated_at || raw.created_at,
+      original_delivery_id: raw.original_delivery_id || null,
+      attempt_number: Number(raw.attempt_number || 1),
+      rescheduled_from_occurrence_id: raw.rescheduled_from_occurrence_id || null,
+    };
+  }
+
+  private async uploadToBucket(bucket: string, file: File, prefix: string) {
+    const extension = file.name.includes('.') ? file.name.split('.').pop() : 'bin';
+    const path = `${prefix}/${crypto.randomUUID()}.${extension}`;
+    const { error } = await supabase.storage.from(bucket).upload(path, file, {
+      cacheControl: '3600',
+      upsert: false,
+      contentType: file.type || undefined,
+    });
+    if (error) throw error;
+    return { path, url: publicUrl(bucket, path) };
+  }
+
   async login(credentials: { username: string; password: string }) {
-    return this.request('/api/auth/login', {
-      method: 'POST',
-      body: JSON.stringify(credentials),
+    return this.run(async () => {
+      const email = credentials.username.trim();
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password: credentials.password,
+      });
+      if (error) throw error;
+      if (!data.user || !data.session) throw new Error('Login sem sessao retornada.');
+
+      const context = await this.getContext(true, data.user);
+      return {
+        token: data.session.access_token,
+        user: this.profileToUser(context.profile, context.company, context.driverId, context.clientId),
+      };
     });
   }
 
   async selectCompany(companyId: string) {
-    return this.request('/api/auth/select-company', {
-      method: 'POST',
-      body: JSON.stringify({ company_id: companyId }),
+    return this.run(async () => {
+      const context = await this.getContext(true);
+      let selectedCompany = context.company;
+
+      if (context.profile.role === 'MASTER' && companyId && companyId !== context.profile.company_id) {
+        const { data, error } = await supabase.from('companies').select('*').eq('id', companyId).maybeSingle();
+        if (error) throw error;
+        selectedCompany = data as CompanyRow | null;
+      }
+
+      if (!selectedCompany) {
+        throw new Error('Empresa selecionada nao encontrada ou sem permissao de acesso.');
+      }
+
+      const { data: sessionData } = await supabase.auth.getSession();
+      return {
+        token: sessionData.session?.access_token || '',
+        user: this.profileToUser(context.profile, selectedCompany, context.driverId, context.clientId),
+        company: selectedCompany,
+      };
     });
   }
 
-  // Users management
+  async getAuthCompanies() {
+    return this.run(async () => {
+      const context = await this.getContext();
+      if (context.profile.role === 'MASTER') {
+        const { data, error } = await supabase.from('companies').select('*').order('name');
+        if (error) throw error;
+        return data || [];
+      }
+      return context.company ? [context.company] : [];
+    });
+  }
+
+  async getManagementCompanies() {
+    return this.run(async () => {
+      const { data, error } = await supabase.from('companies').select('*').order('name');
+      if (error) throw error;
+      return data || [];
+    });
+  }
+
+  async getCompanies() {
+    return this.getManagementCompanies();
+  }
+
+  async createCompany(payload: Record<string, any>) {
+    return this.run(async () => {
+      const { data, error } = await supabase
+        .from('companies')
+        .insert({
+          name: payload.name,
+          cnpj: payload.cnpj || null,
+          domain: payload.domain || null,
+          email: payload.email || null,
+          subscription_plan: payload.subscription_plan || 'BASIC',
+          max_users: Number(payload.max_users || 5),
+          max_drivers: Number(payload.max_drivers || 2),
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    });
+  }
+
+  async updateCompany(companyId: string | number, payload: Record<string, any>) {
+    return this.run(async () => {
+      const { data, error } = await supabase
+        .from('companies')
+        .update(payload)
+        .eq('id', String(companyId))
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    });
+  }
+
   async getUsers() {
-    return this.request('/api/users');
+    return this.run(async () => {
+      let query = supabase
+        .from('profiles')
+        .select('*, companies(name, domain)')
+        .order('created_at', { ascending: false });
+
+      const ctx = await this.getContext();
+      if (ctx.profile.role !== 'MASTER') {
+        query = query.eq('company_id', ctx.profile.company_id);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+      return (data || []).map((profile: any) => ({
+        ...this.profileToUser(profile, profile.companies),
+        company_name: profile.companies?.name,
+        company_domain: profile.companies?.domain,
+      }));
+    });
   }
 
   async createUser(payload: Record<string, any>) {
-    return this.request('/api/users', {
-      method: 'POST',
-      body: JSON.stringify(payload),
+    return this.run(async () => {
+      const context = await this.getContext();
+      const currentSession = (await supabase.auth.getSession()).data.session;
+      const role = normalizeRole(payload.user_type || payload.role);
+      const companyId = payload.company_id || context.profile.company_id;
+      const fullName = payload.full_name || payload.name || payload.username || payload.email;
+      const document = normalizeBrazilianDocument(payload.cpf || payload.document);
+
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+        email: payload.email,
+        password: payload.password,
+        options: {
+          data: {
+            full_name: fullName,
+            role,
+          },
+        },
+      });
+      if (signUpError) throw signUpError;
+
+      if (currentSession) {
+        await supabase.auth.setSession({
+          access_token: currentSession.access_token,
+          refresh_token: currentSession.refresh_token,
+        });
+      }
+
+      // O trigger handle_new_user() já criou o profile automaticamente
+      // Apenas atualizamos com os dados completos
+      const { data: profile, error: profileError } = await supabase
+        .from('profiles')
+        .update({
+          company_id: companyId,
+          username: payload.username || payload.email,
+          full_name: fullName,
+          role,
+          cpf: document,
+          status: payload.status || 'ATIVO',
+          is_active: payload.is_active ?? true,
+        })
+        .eq('auth_user_id', signUpData.user?.id || null)
+        .select()
+        .single();
+      if (profileError) throw profileError;
+
+      if (role === 'DRIVER') {
+        await supabase.from('drivers').insert({
+          company_id: companyId,
+          profile_id: profile.id,
+          name: fullName,
+          cpf: document,
+          status: payload.status || 'ATIVO',
+        });
+      }
+
+      if (role === 'CLIENT') {
+        await supabase.from('clients').insert({
+          company_id: companyId,
+          profile_id: profile.id,
+          name: fullName,
+          email: payload.email,
+          document,
+        });
+      }
+
+      return this.profileToUser(profile as ProfileRow, context.company);
     });
   }
 
   async updateUser(userId: string | number, payload: Record<string, any>) {
-    return this.request(`/api/users/${userId}`, {
-      method: 'PUT',
-      body: JSON.stringify(payload),
+    return this.run(async () => {
+      const normalizedRole = payload.user_type || payload.role ? normalizeRole(payload.user_type || payload.role) : undefined;
+      const document = normalizeBrazilianDocument(payload.cpf || payload.document);
+      const updatePayload: Record<string, any> = {
+        email: payload.email,
+        full_name: payload.full_name || payload.name,
+        role: normalizedRole,
+        cpf: document,
+        status: payload.status,
+        is_active: payload.is_active,
+      };
+      Object.keys(updatePayload).forEach((key) => updatePayload[key] === undefined && delete updatePayload[key]);
+
+      const { data, error } = await supabase
+        .from('profiles')
+        .update(updatePayload)
+        .eq('id', String(userId))
+        .select()
+        .single();
+      if (error) throw error;
+
+      if (normalizedRole === 'CLIENT') {
+        await supabase
+          .from('clients')
+          .update({
+            name: updatePayload.full_name || undefined,
+            email: updatePayload.email || undefined,
+            document,
+          })
+          .eq('profile_id', String(userId));
+      }
+
+      return data;
     });
   }
 
   async deleteUser(userId: string | number) {
-    return this.request(`/api/users/${userId}`, {
-      method: 'DELETE',
+    return this.run(async () => {
+      const { error } = await supabase.from('profiles').delete().eq('id', String(userId));
+      if (error) throw error;
+      return { id: String(userId) };
     });
   }
 
-  // Drivers management (some apps create a separate driver record)
+  async getDrivers(filters?: Record<string, string>) {
+    return this.run(async () => {
+      let query = supabase.from('drivers').select('*, profiles(full_name, email)').order('name');
+      if (filters?.status) query = query.eq('status', filters.status);
+
+      const ctx = await this.getContext();
+      if (ctx.profile.role !== 'MASTER') {
+        query = query.eq('company_id', ctx.profile.company_id);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+      return (data || []).map((driver: any) => ({
+        ...driver,
+        id: String(driver.id),
+        name: driver.name || driver.profiles?.full_name || 'Motorista',
+        userId: driver.profile_id,
+      }));
+    });
+  }
+
   async createDriver(payload: Record<string, any>) {
-    return this.request('/api/drivers', {
-      method: 'POST',
-      body: JSON.stringify(payload),
+    return this.run(async () => {
+      const companyId = await this.companyId();
+      const { data, error } = await supabase
+        .from('drivers')
+        .insert({
+          company_id: payload.company_id || companyId,
+          profile_id: payload.profile_id || payload.user_id || null,
+          name: payload.name || payload.full_name,
+          cpf: payload.cpf || null,
+          phone: payload.phone || null,
+          license: payload.license || null,
+          status: payload.status || 'ATIVO',
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
     });
   }
 
-  // Vehicles (CRUD)
   async getVehicles() {
-    return this.request('/api/vehicles');
+    return this.run(async () => {
+      let query = supabase.from('vehicles').select('*').order('created_at', { ascending: false });
+
+      const ctx = await this.getContext();
+      if (ctx.profile.role !== 'MASTER') {
+        query = query.eq('company_id', ctx.profile.company_id);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+      return data || [];
+    });
   }
 
   async createVehicle(payload: Record<string, any>) {
-    return this.request('/api/vehicles', {
-      method: 'POST',
-      body: JSON.stringify(payload),
+    return this.run(async () => {
+      const companyId = await this.companyId();
+      const { data, error } = await supabase
+        .from('vehicles')
+        .insert({
+          company_id: payload.company_id || companyId,
+          plate: payload.plate,
+          model: payload.model,
+          brand: payload.brand || null,
+          year: payload.year ? Number(payload.year) : null,
+          color: payload.color || null,
+          status: payload.status || 'ATIVO',
+          driver_id: payload.driver_id || null,
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
     });
   }
 
   async updateVehicle(vehicleId: string | number, payload: Record<string, any>) {
-    return this.request(`/api/vehicles/${vehicleId}`, {
-      method: 'PUT',
-      body: JSON.stringify(payload),
+    return this.run(async () => {
+      const { data, error } = await supabase.from('vehicles').update(payload).eq('id', String(vehicleId)).select().single();
+      if (error) throw error;
+      return data;
     });
   }
 
   async deleteVehicle(vehicleId: string | number) {
-    return this.request(`/api/vehicles/${vehicleId}`, {
-      method: 'DELETE',
+    return this.run(async () => {
+      const { error } = await supabase.from('vehicles').delete().eq('id', String(vehicleId));
+      if (error) throw error;
+      return { id: String(vehicleId) };
     });
   }
 
-  // Reports / receipts convenience
-  async getReceiptsReport(filters?: Record<string, string>) { const q = filters && Object.keys(filters).length ? `?${new URLSearchParams(filters).toString()}` : ''; return this.request<any>(`/api/reports/receipts${q}`); }
+  async getDeliveries(filters?: Record<string, string>): Promise<ApiResponse<ApiDelivery[]>> {
+    return this.run(async () => {
+      let query = supabase
+        .from('deliveries')
+        .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,created_at)')
+        .order('created_at', { ascending: false });
 
-  // Receipts / OCR endpoints
-  // Attach an existing receipt to a delivery (wrapper for legacy calls)
+      const ctx = await this.getContext();
+      if (ctx.profile.role !== 'MASTER') {
+        query = query.eq('company_id', ctx.profile.company_id);
+      }
+
+      if (filters?.driver_id) query = query.eq('driver_id', filters.driver_id);
+      if (filters?.status) query = query.eq('status', normalizeDeliveryStatus(filters.status));
+      if (filters?.scheduled_date) query = query.eq('scheduled_date', filters.scheduled_date);
+      if (filters?.date_from) query = query.gte('scheduled_date', filters.date_from);
+      if (filters?.date_to) query = query.lte('scheduled_date', filters.date_to);
+
+      if (filters?.client === 'current') {
+        if (ctx.clientId) query = query.eq('client_id', ctx.clientId);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+      return (data || []).map((delivery) => this.mapDelivery(delivery));
+    });
+  }
+
+  async getDelivery(deliveryId: string | number): Promise<ApiResponse<ApiDelivery>> {
+    return this.run(async () => {
+      const { data, error } = await supabase
+        .from('deliveries')
+        .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,created_at)')
+        .eq('id', String(deliveryId))
+        .single();
+      if (error) throw error;
+      return this.mapDelivery(data);
+    });
+  }
+
+  async createDelivery(payload: Record<string, any>) {
+    return this.run(async () => {
+      const companyId = await this.companyId();
+      const structured = payload.structured || {};
+      const summary = payload.summary || {};
+      const nfData = structured.nf_data || {};
+      const destinatario = structured.destinatario || {};
+      const valores = structured.valores || {};
+      const volumes = structured.volumes || {};
+
+      let sourceDocumentPath: string | null = null;
+      if (payload.file instanceof File) {
+        sourceDocumentPath = (await this.uploadToBucket('delivery-documents', payload.file, `${companyId}/documents`)).path;
+      }
+
+      // Resolve client by CNPJ — find or create
+      let clientId: string | null = payload.client_id || null;
+      const cnpjRaw = payload.client_cnpj || '';
+      const cnpjDigits = cnpjRaw.replace(/\D/g, '');
+      const clientName = summary.clientName || destinatario.razao_social || payload.client_name || '';
+
+      if (!clientId && cnpjDigits.length >= 11) {
+        // Try to find existing client by CNPJ (document field)
+        const { data: existingClient } = await supabase
+          .from('clients')
+          .select('id')
+          .eq('company_id', companyId)
+          .eq('document', cnpjDigits)
+          .maybeSingle();
+
+        if (existingClient) {
+          clientId = String(existingClient.id);
+        } else if (clientName) {
+          // Create a new client record linked to this CNPJ
+          const { data: newClient, error: clientError } = await supabase
+            .from('clients')
+            .insert({
+              company_id: companyId,
+              name: clientName,
+              document: cnpjDigits,
+            })
+            .select('id')
+            .single();
+
+          if (!clientError && newClient) {
+            clientId = String(newClient.id);
+          }
+        }
+      }
+
+      // Also try matching by client_name if no CNPJ was provided
+      if (!clientId && clientName) {
+        const { data: namedClient } = await supabase
+          .from('clients')
+          .select('id')
+          .eq('company_id', companyId)
+          .ilike('name', clientName)
+          .maybeSingle();
+
+        if (namedClient) {
+          clientId = String(namedClient.id);
+        }
+      }
+
+      const driverId = payload.driver_id || null;
+      const { data, error } = await supabase
+        .from('deliveries')
+        .insert({
+          company_id: companyId,
+          driver_id: driverId,
+          client_id: clientId,
+          nf_number: summary.nfNumber || nfData.numero || payload.nf_number || `NF-${Date.now()}`,
+          client_name: clientName || 'Cliente nao informado',
+          client_name_extracted: clientName || null,
+          delivery_address: summary.deliveryAddress || destinatario.endereco || payload.delivery_address || 'Endereco nao informado',
+          client_address: summary.deliveryAddress || destinatario.endereco || null,
+          delivery_volume: Number(summary.volume || volumes.quantidade || payload.delivery_volume || 1),
+          merchandise_value: asNumber(summary.merchandiseValue || valores.valor_total_nota || payload.merchandise_value, 0),
+          scheduled_date: payload.scheduled_date || todayIso(),
+          notes: payload.notes || summary.observations || null,
+          status: driverId ? 'ASSIGNED' : 'PENDING',
+          source_document_path: sourceDocumentPath,
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+      return this.mapDelivery(data);
+    });
+  }
+
+  async getDashboardKPIs() {
+    return this.run(async () => {
+      const ctx = await this.getContext();
+      const today = todayIso();
+      let deliveriesQuery = supabase.from('deliveries').select('id,status,scheduled_date').eq('scheduled_date', today);
+      let driversQuery = supabase.from('drivers').select('id,current_status').in('current_status', ['online', 'active', 'idle']);
+      let occurrencesQuery = supabase
+        .from('occurrences')
+        .select('id')
+        .eq('status', 'PENDING')
+        .gte('created_at', `${today}T00:00:00`);
+
+      if (ctx.profile.role !== 'MASTER') {
+        deliveriesQuery = deliveriesQuery.eq('company_id', ctx.profile.company_id);
+        driversQuery = driversQuery.eq('company_id', ctx.profile.company_id);
+        occurrencesQuery = occurrencesQuery.eq('company_id', ctx.profile.company_id);
+      }
+
+      const [{ data: deliveries, error: deliveriesError }, { data: drivers, error: driversError }, { data: occurrences, error: occurrencesError }] =
+        await Promise.all([deliveriesQuery, driversQuery, occurrencesQuery]);
+
+      if (deliveriesError) throw deliveriesError;
+      if (driversError) throw driversError;
+      if (occurrencesError) throw occurrencesError;
+
+      const list = deliveries || [];
+      return {
+        today_deliveries: {
+          total: list.length,
+          completed: list.filter((item) => item.status === 'DELIVERED').length,
+          pending: list.filter((item) => item.status !== 'DELIVERED').length,
+        },
+        pending_occurrences: occurrences?.length || 0,
+        active_drivers: drivers?.length || 0,
+      };
+    });
+  }
+
+  async sendDriverLocation(payload: DriverLocationPayload) {
+    return this.run(async () => {
+      const context = await this.getContext();
+      const driverId = String(payload.driver_id || context.driverId || '');
+      if (!driverId) throw new Error('Motorista nao identificado.');
+      const companyId = context.profile.company_id;
+      if (!companyId) throw new Error('Empresa nao identificada.');
+
+      const { data, error } = await supabase
+        .from('tracking_points')
+        .insert({
+          company_id: companyId,
+          driver_id: driverId,
+          delivery_id: payload.delivery_id || null,
+          latitude: payload.latitude,
+          longitude: payload.longitude,
+          accuracy: payload.accuracy ?? null,
+          speed: payload.speed ?? null,
+          heading: payload.heading ?? null,
+        })
+        .select()
+        .single();
+      if (error) throw error;
+
+      await supabase.from('drivers').update({ current_status: 'active' }).eq('id', driverId);
+      return data;
+    });
+  }
+
+  async upsertDriverPosition(driverId: string, latitude: number, longitude: number): Promise<void> {
+    return this.run(async () => {
+      const { error } = await supabase.rpc('upsert_driver_position', {
+        p_motorista_id: driverId,
+        p_latitude: latitude,
+        p_longitude: longitude,
+      });
+      if (error) throw error;
+    });
+  }
+
+  async getCurrentLocations() {
+    return this.run(async () => {
+      const { data, error } = await supabase
+        .from('tracking_points')
+        .select('*, drivers(name,current_status)')
+        .gte('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+
+      const byDriver = new Map<string, any>();
+      (data || []).forEach((point: any) => {
+        if (!byDriver.has(point.driver_id)) byDriver.set(point.driver_id, point);
+      });
+
+      return Array.from(byDriver.values()).map((point: any) => ({
+        driver_id: point.driver_id,
+        driver_name: point.drivers?.name || 'Motorista',
+        latitude: point.latitude,
+        longitude: point.longitude,
+        accuracy: point.accuracy || 0,
+        speed: point.speed || 0,
+        heading: point.heading || 0,
+        last_update: point.created_at,
+        status: point.drivers?.current_status === 'offline' ? 'inactive' : 'active',
+        activity_status: point.drivers?.current_status === 'idle' ? 'idle' : 'active',
+        current_delivery_id: point.delivery_id,
+      }));
+    });
+  }
+
+  async getTrackingHistory(driverId: string | number, filters?: TrackingHistoryFilters) {
+    return this.run(async () => {
+      let query = supabase.from('tracking_points').select('*').eq('driver_id', String(driverId)).order('created_at');
+      if (filters?.start_date) query = query.gte('created_at', filters.start_date);
+      if (filters?.end_date) query = query.lte('created_at', filters.end_date);
+      const { data, error } = await query;
+      if (error) throw error;
+      return (data || []).map((point: any) => ({ ...point, timestamp: point.created_at }));
+    });
+  }
+
+  async updateDriverStatus(driverId: string | number, status: DriverStatus) {
+    return this.run(async () => {
+      const { data, error } = await supabase
+        .from('drivers')
+        .update({ current_status: status })
+        .eq('id', String(driverId))
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    });
+  }
+
   async attachReceipt(deliveryId: string | number, driverId: string | number | null, file: File, options?: { notes?: string; status?: string }) {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('delivery_id', String(deliveryId));
-    if (driverId) {
-      formData.append('driver_id', String(driverId));
-    }
-    if (options?.notes) {
-      formData.append('notes', options.notes);
-    }
-    if (options?.status) {
-      formData.append('status', options.status);
-    }
+    if (driverId) formData.append('driver_id', String(driverId));
+    if (options?.notes) formData.append('notes', options.notes);
     return this.uploadReceipt(formData);
   }
 
   async uploadReceipt(formData: FormData) {
-    return this.request<any>('/api/receipts/upload', { method: 'POST', body: formData });
+    return this.run(async () => {
+      const context = await this.getContext();
+      const companyId = context.profile.company_id;
+      if (!companyId) throw new Error('Empresa nao identificada.');
+      const file = formData.get('file');
+      if (!(file instanceof File)) throw new Error('Arquivo nao encontrado.');
+      const deliveryId = String(formData.get('delivery_id') || formData.get('deliveryId') || '');
+      const driverId = String(formData.get('driver_id') || formData.get('driverId') || context.driverId || '');
+      if (!deliveryId) throw new Error('Entrega nao informada.');
+
+      const upload = await this.uploadToBucket('receipts', file, `${companyId}/${deliveryId}`);
+      const { data, error } = await supabase
+        .from('delivery_receipts')
+        .insert({
+          company_id: companyId,
+          delivery_id: deliveryId,
+          driver_id: driverId || null,
+          file_path: upload.path,
+          file_url: upload.url,
+          filename: file.name,
+          status: 'UPLOADED',
+          notes: String(formData.get('notes') || '') || null,
+        })
+        .select()
+        .single();
+      if (error) throw error;
+
+      await supabase
+        .from('deliveries')
+        .update({ status: 'DELIVERED', delivered_at: new Date().toISOString() })
+        .eq('id', deliveryId);
+
+      return { ...data, receipt_image_url: upload.url, image_url: upload.url };
+    });
   }
 
-  async processReceiptOCR(receiptId: string | number) {
-    return this.request<any>(`/api/receipts/${receiptId}/process-ocr`, { method: 'POST' });
+  async getReceipts(filters?: Record<string, string>) {
+    return this.getCanhotos(filters);
+  }
+
+  async getCanhotos(filters?: Record<string, string>) {
+    return this.run(async () => {
+      let query = supabase
+        .from('delivery_receipts')
+        .select('*, deliveries(nf_number,client_name), drivers(name)')
+        .order('created_at', { ascending: false });
+
+      const ctx = await this.getContext();
+      if (ctx.profile.role !== 'MASTER') {
+        query = query.eq('company_id', ctx.profile.company_id);
+      }
+
+      if (filters?.delivery_id) query = query.eq('delivery_id', filters.delivery_id);
+      if (filters?.driver_id) query = query.eq('driver_id', filters.driver_id);
+      if (filters?.date_from) query = query.gte('created_at', filters.date_from);
+      if (filters?.date_to) query = query.lte('created_at', filters.date_to);
+
+      const { data, error } = await query;
+      if (error) throw error;
+      return (data || []).map((receipt: any) => ({
+        ...receipt,
+        id: String(receipt.id),
+        receipt_image_url: receipt.file_url || publicUrl('receipts', receipt.file_path),
+        image_url: receipt.file_url || publicUrl('receipts', receipt.file_path),
+        nf_number: receipt.deliveries?.nf_number,
+        client_name: receipt.deliveries?.client_name,
+        driver_name: receipt.drivers?.name,
+      }));
+    });
+  }
+
+  async getReceiptsReport(filters?: Record<string, string>) {
+    return this.run(async () => {
+      const response = await this.getCanhotos(filters);
+      if (!response.success) throw new Error(response.error);
+      return response.data.map((receipt: any) => ({
+        id: receipt.delivery_id,
+        nf_number: receipt.nf_number || 'N/A',
+        client_name_extracted: receipt.client_name || 'Cliente',
+        delivery_date: receipt.created_at,
+        driver_name: receipt.driver_name || 'Sem motorista',
+        receipt_image_url: receipt.receipt_image_url,
+        receipt_captured_at: receipt.created_at,
+      }));
+    });
+  }
+
+  async getDeliveryReports(filters?: Record<string, string>) {
+    return this.run(async () => {
+      const response = await this.getDeliveries(filters);
+      if (!response.success) throw new Error(response.error);
+
+      const deliveryIds = response.data.map((delivery) => String(delivery.id));
+      const occurrenceByDelivery = new Map<string, any>();
+      if (deliveryIds.length > 0) {
+        const { data: occurrences, error } = await supabase
+          .from('occurrences')
+          .select('*, drivers(name)')
+          .in('delivery_id', deliveryIds)
+          .order('created_at', { ascending: false });
+        if (error) throw error;
+        (occurrences || []).forEach((occurrence: any) => {
+          const key = String(occurrence.delivery_id);
+          if (!occurrenceByDelivery.has(key)) {
+            occurrenceByDelivery.set(key, {
+              ...occurrence,
+              driver_name: occurrence.drivers?.name || null,
+            });
+          }
+        });
+      }
+
+      return response.data.map((delivery) => {
+        const occurrence = occurrenceByDelivery.get(String(delivery.id));
+        return {
+        id: delivery.id,
+        nfNumber: delivery.nf_number,
+        nf_number: delivery.nf_number,
+        date: delivery.created_at,
+        status: delivery.status || 'PENDING',
+        volume: delivery.delivery_volume || 1,
+        value: asNumber(delivery.merchandise_value, 0),
+        driver: delivery.driver_name,
+        delivery_address: delivery.delivery_address || delivery.client_address || null,
+        client_address: delivery.client_address || delivery.delivery_address || null,
+        client_name: delivery.client_name || delivery.client_name_extracted || null,
+        receipt_image_url: delivery.receipt_image_url,
+        original_delivery_id: delivery.original_delivery_id || null,
+        attempt_number: delivery.attempt_number || 1,
+        rescheduled_from_occurrence_id: delivery.rescheduled_from_occurrence_id || null,
+        latest_occurrence: occurrence || null,
+      };
+      });
+    });
+  }
+
+  async processReceiptOCR(receiptId: string | number, ocrData?: { cnpj?: string; clientName?: string; nfNumber?: string; rawText?: string; confidence?: number }) {
+    return this.run(async () => {
+      const updatePayload: Record<string, any> = {
+        status: 'PROCESSED',
+        ocr_data: ocrData ? {
+          cnpj: ocrData.cnpj || '',
+          client_name: ocrData.clientName || '',
+          nf_number: ocrData.nfNumber || '',
+          raw_text: ocrData.rawText || '',
+          confidence: ocrData.confidence || 0,
+          processed_at: new Date().toISOString(),
+        } : {},
+      };
+
+      const { data, error } = await supabase
+        .from('delivery_receipts')
+        .update(updatePayload)
+        .eq('id', String(receiptId))
+        .select()
+        .single();
+      if (error) throw error;
+
+      // Also update the parent delivery with extracted data if available
+      if (ocrData?.nfNumber && data.delivery_id) {
+        await supabase
+          .from('deliveries')
+          .update({
+            nf_number: ocrData.nfNumber,
+            client_name: ocrData.clientName || undefined,
+            client_name_extracted: ocrData.clientName || undefined,
+          })
+          .eq('id', data.delivery_id);
+      }
+
+      return {
+        ...data,
+        id: String(data.id),
+        ocr_data: updatePayload.ocr_data,
+        status: 'PROCESSED',
+      };
+    });
+  }
+
+  async uploadStandaloneReceipt(file: File, ocrData?: { cnpj?: string; clientName?: string; nfNumber?: string; rawText?: string; confidence?: number }) {
+    return this.run(async () => {
+      const context = await this.getContext();
+      const companyId = context.profile.company_id;
+      if (!companyId) throw new Error('Empresa nao identificada.');
+
+      // Try to find a matching delivery by nf_number
+      let deliveryId: string | null = null;
+      if (ocrData?.nfNumber) {
+        const { data: matchedDelivery } = await supabase
+          .from('deliveries')
+          .select('id')
+          .eq('company_id', companyId)
+          .eq('nf_number', ocrData.nfNumber)
+          .maybeSingle();
+
+        if (matchedDelivery) {
+          deliveryId = matchedDelivery.id;
+        }
+      }
+
+      // Upload file to storage
+      const prefix = deliveryId ? `${companyId}/${deliveryId}` : `${companyId}/standalone`;
+      const upload = await this.uploadToBucket('receipts', file, prefix);
+
+      // Create receipt record
+      const ocrPayload = ocrData ? {
+        cnpj: ocrData.cnpj || '',
+        client_name: ocrData.clientName || '',
+        nf_number: ocrData.nfNumber || '',
+        raw_text: ocrData.rawText || '',
+        confidence: ocrData.confidence || 0,
+        processed_at: new Date().toISOString(),
+      } : null;
+
+      const { data, error } = await supabase
+        .from('delivery_receipts')
+        .insert({
+          company_id: companyId,
+          delivery_id: deliveryId,
+          driver_id: context.driverId || null,
+          file_path: upload.path,
+          file_url: upload.url,
+          filename: file.name,
+          status: ocrPayload ? 'PROCESSED' : 'UPLOADED',
+          ocr_data: ocrPayload,
+        })
+        .select()
+        .single();
+      if (error) throw error;
+
+      // If matched a delivery, update it
+      if (deliveryId) {
+        const deliveryUpdate: Record<string, any> = {
+          status: 'DELIVERED',
+          delivered_at: new Date().toISOString(),
+        };
+        if (ocrData?.clientName) {
+          deliveryUpdate.client_name = ocrData.clientName;
+          deliveryUpdate.client_name_extracted = ocrData.clientName;
+        }
+        await supabase.from('deliveries').update(deliveryUpdate).eq('id', deliveryId);
+      }
+
+      return {
+        ...data,
+        id: String(data.id),
+        receipt_image_url: upload.url,
+        image_url: upload.url,
+        matched_delivery: !!deliveryId,
+        delivery_id: deliveryId,
+      };
+    });
   }
 
   async validateReceipt(receiptId: string | number, payload: Record<string, any>) {
-    return this.request<any>(`/api/receipts/${receiptId}/validate`, { method: 'PUT', body: JSON.stringify(payload) });
+    return this.run(async () => {
+      const { data, error } = await supabase
+        .from('delivery_receipts')
+        .update({
+          ocr_data: payload.ocr_data || payload.corrections || {},
+          validated: Boolean(payload.validated),
+          status: payload.validated ? 'VALIDATED' : 'UPLOADED',
+        })
+        .eq('id', String(receiptId))
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    });
   }
 
-  // High-level helper used by DeliveryUpload: upload file then trigger OCR and return OCR result
   async smartProcessDocument(file: File) {
-    try {
-      // Send the file directly to the receipts Document AI endpoint which accepts
-      // a multipart/form-data with `file` and does NOT require delivery_id/driver_id.
-      const fd = new FormData();
-      fd.append('file', file);
-      const fullUrl = `${getBaseUrl('/api/receipts/process-documentai')}/api/receipts/process-documentai`;
-      const headers = this.getAuthHeader();
-      // Do not set Content-Type so the browser sets the correct boundary
-      const res = await fetch(fullUrl, { method: 'POST', body: fd, headers });
-      const text = await res.text();
-      const data = safeJsonParse(text) ?? text;
-      if (!res.ok) {
-        const err = (data && typeof data === 'object' && 'error' in data) ? (data as any).error : `HTTP ${res.status}`;
-        return { success: false, error: String(err) } as ApiResponse<any>;
-      }
-      if (data && typeof data === 'object' && 'success' in data) return data as ApiResponse<any>;
-      return { success: true, data: data as any } as ApiResponse<any>;
-    } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : 'Erro interno' } as ApiResponse<any>;
-    }
+    return this.run(async () => ({
+      extractedData: {},
+      rawText: '',
+      confidence: null,
+      filename: file.name,
+      message: 'OCR externo fora do MVP. Preencha ou confirme os dados manualmente.',
+    }));
   }
 
-  // Create a delivery from an uploaded SEFAZ document or structured data.
-  // Accepts an object with optional fields: file: File, structured: any, summary: any, isSefazValid?: boolean, driver_id?: string|number, notes?: string
-  async createDelivery(payload: Record<string, any>) {
-    try {
-      const fd = new FormData();
-      if (payload.file) fd.append('file', payload.file);
-      if (payload.structured) fd.append('structured', JSON.stringify(payload.structured));
-      if (payload.summary) fd.append('summary', JSON.stringify(payload.summary));
-      if (typeof payload.isSefazValid !== 'undefined') fd.append('isSefazValid', payload.isSefazValid ? 'true' : 'false');
-      if (payload.driver_id) fd.append('driver_id', String(payload.driver_id));
-      if (payload.notes) fd.append('notes', String(payload.notes));
+  async getSecureFile(url: string): Promise<string | null> {
+    return url || null;
+  }
 
-      // POST to the deliveries create-from-sefaz endpoint
-      return this.request<any>('/api/deliveries/create-from-sefaz', { method: 'POST', body: fd });
-    } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : 'Erro interno' } as ApiResponse<any>;
-    }
+  async getOccurrences(filters?: Record<string, string>) {
+    return this.run(async () => {
+      let query = supabase
+        .from('occurrences')
+        .select('*, deliveries(client_name), drivers(name)')
+        .order('created_at', { ascending: false });
+
+      const ctx = await this.getContext();
+      if (ctx.profile.role !== 'MASTER') {
+        query = query.eq('company_id', ctx.profile.company_id);
+      }
+
+      if (filters?.type) query = query.eq('type', filters.type);
+      if (filters?.driver_id) query = query.eq('driver_id', filters.driver_id);
+      if (filters?.start_date) query = query.gte('created_at', filters.start_date);
+      if (filters?.end_date) query = query.lte('created_at', filters.end_date);
+      if (filters?.date) {
+        const day = filters.date;
+        query = query.gte('created_at', `${day}T00:00:00`).lte('created_at', `${day}T23:59:59`);
+      }
+      if (filters?.delivery_id) query = query.eq('delivery_id', filters.delivery_id);
+
+      const { data, error } = await query;
+      if (error) throw error;
+      return (data || []).map((item: any) => ({
+        ...item,
+        photo_url: item.photo_url || publicUrl('receipts', item.photo_path),
+        driver_name: item.drivers?.name || 'Motorista',
+        client_name: item.deliveries?.client_name || 'Cliente',
+        rescheduled_delivery_id: item.rescheduled_delivery_id || null,
+        next_scheduled_date: item.next_scheduled_date || null,
+      }));
+    });
+  }
+
+  async createOccurrence(deliveryId: string | number, payload: Record<string, any>) {
+    return this.run(async () => {
+      const context = await this.getContext();
+      const companyId = context.profile.company_id;
+      if (!companyId) throw new Error('Empresa nao identificada.');
+
+      const { data: originalDelivery, error: deliveryError } = await supabase
+        .from('deliveries')
+        .select('*')
+        .eq('id', String(deliveryId))
+        .eq('company_id', companyId)
+        .single();
+      if (deliveryError) throw deliveryError;
+
+      let photoPath: string | null = null;
+      let photoUrl: string | null = null;
+      if (payload.photo instanceof File) {
+        const upload = await this.uploadToBucket('receipts', payload.photo, `${companyId}/occurrences`);
+        photoPath = upload.path;
+        photoUrl = upload.url;
+      }
+
+      const { data, error } = await supabase
+        .from('occurrences')
+        .insert({
+          company_id: companyId,
+          delivery_id: String(deliveryId),
+          driver_id: context.driverId,
+          type: payload.type,
+          description: payload.description,
+          photo_path: photoPath,
+          photo_url: photoUrl,
+          latitude: payload.latitude || null,
+          longitude: payload.longitude || null,
+        })
+        .select()
+        .single();
+      if (error) throw error;
+
+      await supabase.from('deliveries').update({ status: 'FAILED' }).eq('id', String(deliveryId));
+
+      let retryDelivery: ApiDelivery | null = null;
+      if (payload.reschedule !== false) {
+        const nextScheduledDate = payload.next_scheduled_date || getNextScheduledDate(originalDelivery);
+        const retryPayload = buildRetryDeliveryPayload(originalDelivery, {
+          occurrenceId: String(data.id),
+          nextScheduledDate,
+          description: payload.description || '',
+        });
+
+        const { data: retryData, error: retryError } = await supabase
+          .from('deliveries')
+          .insert(retryPayload)
+          .select()
+          .single();
+        if (retryError) throw retryError;
+
+        await supabase
+          .from('occurrences')
+          .update({
+            rescheduled_delivery_id: retryData.id,
+            next_scheduled_date: nextScheduledDate,
+          })
+          .eq('id', data.id);
+
+        retryDelivery = this.mapDelivery(retryData);
+      }
+
+      return {
+        ...data,
+        rescheduled_delivery_id: retryDelivery?.id || null,
+        next_scheduled_date: retryDelivery?.scheduled_date || null,
+        retry_delivery: retryDelivery,
+      };
+    });
+  }
+
+  async getDriverPerformanceReports() {
+    return this.run(async () => {
+      const { data, error } = await supabase.from('drivers').select('*, deliveries(id,status)');
+      if (error) throw error;
+      return data || [];
+    });
+  }
+
+  async assignDriver(deliveryId: string | number, driverId: string | number): Promise<ApiResponse<ApiDelivery>> {
+    return this.run(async () => {
+      const context = await this.getContext();
+      const companyId = context.profile.company_id;
+      if (!companyId) throw new Error('Empresa nao identificada.');
+
+      const { data, error } = await supabase
+        .from('deliveries')
+        .update({
+          driver_id: String(driverId),
+          status: 'ASSIGNED',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', String(deliveryId))
+        .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,created_at)')
+        .single();
+
+      if (error) throw error;
+
+      // Write event to delivery_events
+      await supabase.from('delivery_events').insert({
+        delivery_id: String(deliveryId),
+        driver_id: String(driverId),
+        event_type: 'ASSIGNED',
+        description: 'Motorista atribuído via admin',
+      });
+
+      return this.mapDelivery(data);
+    });
+  }
+
+  async updateDeliveryStatus(
+    deliveryId: string,
+    newStatus: DeliveryStatus,
+    eventType?: string,
+    description?: string
+  ): Promise<ApiResponse<ApiDelivery>> {
+    return this.run(async () => {
+      const context = await this.getContext();
+      const companyId = context.profile.company_id;
+      if (!companyId) throw new Error('Empresa nao identificada.');
+
+      const { data, error } = await supabase
+        .from('deliveries')
+        .update({
+          status: newStatus,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', String(deliveryId))
+        .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,created_at)')
+        .single();
+
+      if (error) throw error;
+
+      // Write event to delivery_events
+      await supabase.from('delivery_events').insert({
+        delivery_id: String(deliveryId),
+        driver_id: context.driverId || null,
+        event_type: eventType || newStatus,
+        description: description || null,
+      });
+
+      return this.mapDelivery(data);
+    });
+  }
+
+  async confirmDeliveryLoading(deliveryId: string): Promise<ApiResponse<ApiDelivery>> {
+    return this.run(async () => {
+      const { data, error } = await supabase
+        .from('deliveries')
+        .update({
+          status: 'ASSIGNED',
+          loaded_at: new Date().toISOString(),
+        })
+        .eq('id', String(deliveryId))
+        .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,created_at)')
+        .single();
+
+      if (error) throw error;
+      return this.mapDelivery(data);
+    });
+  }
+
+  async startRoute(deliveryIds: string[]): Promise<ApiResponse<{ success: boolean; updated: number }>> {
+    return this.run(async () => {
+      const { data, error, count } = await supabase
+        .from('deliveries')
+        .update({ status: 'IN_TRANSIT' })
+        .in('id', deliveryIds)
+        .select('id');
+
+      if (error) throw error;
+      return { success: true, updated: count || data?.length || 0 };
+    });
+  }
+
+  async getClients(filters?: { company_id?: string; search?: string }): Promise<ApiResponse<any[]>> {
+    return this.run(async () => {
+      const companyId = filters?.company_id || (await this.companyId());
+
+      let query = supabase.from('clients').select('*').eq('company_id', String(companyId));
+
+      if (filters?.search) {
+        query = query.or(`name.ilike('%${filters.search}%'),email.ilike('%${filters.search}%'),phone.ilike('%${filters.search}%')`);
+      }
+
+      const { data, error } = await query.order('name');
+      if (error) throw error;
+      return data || [];
+    });
+  }
+
+  async createClient(payload: {
+    name: string;
+    document?: string;
+    email?: string;
+    phone?: string;
+    address?: string;
+  }): Promise<ApiResponse<any>> {
+    return this.run(async () => {
+      const companyId = await this.companyId();
+
+      const { data, error } = await supabase
+        .from('clients')
+        .insert({
+          company_id: companyId,
+          name: payload.name,
+          document: normalizeBrazilianDocument(payload.document),
+          email: payload.email || null,
+          phone: payload.phone || null,
+          address: payload.address || null,
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data;
+    });
+  }
+
+  async updateClient(clientId: string | number, payload: {
+    name?: string;
+    document?: string;
+    email?: string;
+    phone?: string;
+    address?: string;
+  }): Promise<ApiResponse<any>> {
+    return this.run(async () => {
+      const companyId = await this.companyId();
+
+      const { data, error } = await supabase
+        .from('clients')
+        .update({
+          name: payload.name || undefined,
+          document: normalizeBrazilianDocument(payload.document) || undefined,
+          email: payload.email || undefined,
+          phone: payload.phone || undefined,
+          address: payload.address || undefined,
+        })
+        .eq('id', String(clientId))
+        .eq('company_id', companyId)
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data;
+    });
+  }
+
+  async deleteClient(clientId: string | number): Promise<ApiResponse<{ success: boolean }>> {
+    return this.run(async () => {
+      const companyId = await this.companyId();
+
+      const { error } = await supabase
+        .from('clients')
+        .delete()
+        .eq('id', String(clientId))
+        .eq('company_id', companyId);
+
+      if (error) throw error;
+      return { success: true };
+    });
   }
 }
 

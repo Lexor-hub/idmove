@@ -1,11 +1,11 @@
-Objetivo: Gerar um frontend React completo para o sistema "ID Transporte", pronto para consumir os endpoints da API Node.js fornecida. O sistema deve atender às necessidades de diferentes perfis de usuário (Motorista, Administrador, Supervisor/Operador, Cliente) e suas respectivas funcionalidades.
+Objetivo: Gerar um frontend React completo para o sistema "ID MOVE", pronto para consumir os endpoints da API Node.js fornecida. O sistema deve atender às necessidades de diferentes perfis de usuário (Motorista, Administrador, Supervisor/Operador, Cliente) e suas respectivas funcionalidades.
 Informações Essenciais do Sistema:
-• Nome do Sistema: ID Transporte
+• Nome do Sistema: ID MOVE
 • Domínio: .com.br
 • Contexto: Gerenciamento de entregas com foco em digitalização de canhotos, rastreamento e relatórios, para uma transportadora com média de 150 a 200 entregas/dia, 25 a 30 motoristas e veículos, atuando em São Paulo Capital e Interior.
 Estrutura Técnica:
 • Framework Frontend: React (conforme solicitado no prompt)
-• API Backend: Consumir os microserviços Node.js conforme a "Documentação da API ID Transportes".
+• API Backend: Consumir os microserviços Node.js conforme a "Documentação da API ID MOVE".
 • Autenticação: O sistema deve usar autenticação baseada em JWT, consumindo os endpoints /api/auth/login e /api/auth/forgot-password. Endpoints protegidos exigem o header Authorization: Bearer <token>.
 Funcionalidades por Perfil de Usuário:
 1. Geral (Login e Acesso):

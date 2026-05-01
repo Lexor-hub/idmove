@@ -2,8 +2,23 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User, Company, AuthContextType, LoginCredentials } from '@/types/auth';
 import { apiService } from '@/services/api';
 import { useToast } from '@/hooks/use-toast';
+import { normalizeRole } from '@/lib/roles';
 
 const AuthContext = createContext<AuthContextType | null>(null);
+
+const mapUser = (userData: User): User => ({
+  ...userData,
+  role: normalizeRole(userData.user_type || userData.role),
+  name: userData.full_name || userData.name,
+});
+
+const clearStoredAuth = () => {
+  localStorage.removeItem('id_move_token');
+  localStorage.removeItem('id_move_user');
+  localStorage.removeItem('id_move_company');
+  localStorage.removeItem('temp_token');
+  localStorage.removeItem('temp_user');
+};
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
@@ -22,9 +37,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     // Check for stored auth data on app load
-    const token = localStorage.getItem('id_transporte_token');
-    const userData = localStorage.getItem('id_transporte_user');
-    const companyData = localStorage.getItem('id_transporte_company');
+    const token = localStorage.getItem('id_move_token');
+    const userData = localStorage.getItem('id_move_user');
+    const companyData = localStorage.getItem('id_move_company');
     
     console.log('Verificando dados de autenticação...');
     console.log('Token presente:', !!token);
@@ -33,8 +48,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (token && userData) {
       try {
         const parsedUser = JSON.parse(userData);
-        console.log('Usuário carregado:', parsedUser);
-        setUser(parsedUser);
+        const restoredUser = mapUser(parsedUser);
+        console.log('Usuário carregado:', restoredUser);
+        setUser(restoredUser);
         if (companyData) {
           const parsedCompany = JSON.parse(companyData);
           console.log('Empresa carregada:', parsedCompany);
@@ -46,9 +62,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       } catch (error) {
         console.error('Erro ao carregar dados do usuário:', error);
-        localStorage.removeItem('id_transporte_token');
-        localStorage.removeItem('id_transporte_user');
-        localStorage.removeItem('id_transporte_company');
+        clearStoredAuth();
         setAuthStep('login');
       }
     } else {
@@ -68,47 +82,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.log('Resposta do login:', response);
       
       if (response.success && response.data) {
-        const { user: userData, token } = response.data;
+        const { user: userData, token, company: selectedCompany } = response.data;
         console.log('Token recebido:', token ? 'Presente' : 'Ausente');
         console.log('User data recebido:', userData);
         
-        // Mapeamento de roles do backend para o frontend (mantendo compatibilidade)
-        const roleMap: Record<string, string> = {
-          MASTER: 'MASTER',
-          ADMIN: 'ADMIN',
-          SUPERVISOR: 'SUPERVISOR',
-          OPERATOR: 'OPERATOR',
-          DRIVER: 'DRIVER',
-          CLIENT: 'CLIENT',
-          // Compatibilidade com roles antigas
-          ADMINISTRADOR: 'ADMIN',
-          MOTORISTA: 'DRIVER',
-          OPERADOR: 'OPERATOR',
-        };
-        
-        const mappedUser = { 
-          ...userData, 
-          role: roleMap[userData.user_type] || userData.user_type,
-          name: userData.full_name || userData.name
-        };
-        
-        // Store temporary token (without company_id)
+        const mappedUser = mapUser(userData);
+
+        setUser(mappedUser);
+
+        if (selectedCompany && mappedUser.role !== 'MASTER') {
+          localStorage.setItem('id_move_token', token);
+          localStorage.setItem('id_move_user', JSON.stringify(mappedUser));
+          localStorage.setItem('id_move_company', JSON.stringify(selectedCompany));
+          localStorage.removeItem('temp_token');
+          localStorage.removeItem('temp_user');
+          setCompany(selectedCompany);
+          setAuthStep('complete');
+          toast({
+            title: "Login realizado com sucesso!",
+            description: `Bem-vindo(a), ${mappedUser.name}!`,
+          });
+          return;
+        }
+
         localStorage.setItem('temp_token', token);
         localStorage.setItem('temp_user', JSON.stringify(mappedUser));
-        
-        console.log('Token temporário salvo no localStorage:', token);
-        console.log('Usuário temporário salvo no localStorage:', mappedUser);
-        
-        // Verificar se foi salvo
-        const savedToken = localStorage.getItem('temp_token');
-        console.log('Token verificado no localStorage:', savedToken ? 'Presente' : 'Ausente');
-        
-        setUser(mappedUser);
+        setCompany(null);
         setAuthStep('company');
-        
+
         toast({
           title: "Login realizado com sucesso!",
-          description: `Bem-vindo(a), ${mappedUser.name}! Agora selecione sua empresa.`,
+          description: `Bem-vindo(a), ${mappedUser.name}! Selecione a empresa para continuar.`,
         });
       } else {
         throw new Error(response.error || 'Erro no login');
@@ -131,30 +135,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const response = await apiService.selectCompany(companyId);
       
       if (response.success && response.data) {
-        const { user: userData, token } = response.data;
-        
-        // Mapeamento de roles do backend para o frontend
-        const roleMap: Record<string, string> = {
-          MASTER: 'MASTER',
-          ADMIN: 'ADMIN',
-          SUPERVISOR: 'SUPERVISOR',
-          OPERATOR: 'OPERATOR',
-          DRIVER: 'DRIVER',
-          CLIENT: 'CLIENT',
-          ADMINISTRADOR: 'ADMIN',
-          MOTORISTA: 'DRIVER',
-          OPERADOR: 'OPERATOR',
-        };
-        
-        const mappedUser = { 
-          ...userData, 
-          role: roleMap[userData.user_type] || userData.user_type,
-          name: userData.full_name || userData.name
-        };
+        const { user: userData, token, company: selectedCompany } = response.data;
+        const mappedUser = mapUser(userData);
         
         // Store final token (with company_id)
-        localStorage.setItem('id_transporte_token', token);
-        localStorage.setItem('id_transporte_user', JSON.stringify(mappedUser));
+        localStorage.setItem('id_move_token', token);
+        localStorage.setItem('id_move_user', JSON.stringify(mappedUser));
+        localStorage.setItem('id_move_company', JSON.stringify(selectedCompany));
         localStorage.removeItem('temp_token');
         localStorage.removeItem('temp_user');
         
@@ -162,6 +149,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.log('Usuário final salvo:', mappedUser);
         
         setUser(mappedUser);
+        setCompany(selectedCompany);
         setAuthStep('complete');
         
         toast({
@@ -185,11 +173,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = () => {
     console.log('Fazendo logout...');
-    localStorage.removeItem('id_transporte_token');
-    localStorage.removeItem('id_transporte_user');
-    localStorage.removeItem('id_transporte_company');
-    localStorage.removeItem('temp_token');
-    localStorage.removeItem('temp_user');
+    clearStoredAuth();
     setUser(null);
     setCompany(null);
     setAuthStep('login');

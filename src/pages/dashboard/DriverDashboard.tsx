@@ -1,8 +1,10 @@
-﻿import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
 import {
     Play,
     Square,
@@ -13,12 +15,15 @@ import {
     AlertTriangle,
     Plus,
     Route,
-    Upload
+    Upload,
+    Eye
 } from 'lucide-react';
 import { apiService } from '@/services/api';
+import { processImageOCR, type NFeExtractedData } from '@/services/ocrService';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
-import { DeliveryUpload } from '@/components/delivery/DeliveryUpload';
+import { useDriverLocation } from '@/hooks/useDriverLocation';
+import { SimpleDeliveryForm } from '@/components/delivery/SimpleDeliveryForm';
 
 // CORRIGIDO: A interface agora inclui 'createdAt' e 'driverId'
 interface Delivery {
@@ -62,6 +67,7 @@ export const DriverDashboard = () => {
     const [routeStarted, setRouteStarted] = useState(false);
     const [dayStarted, setDayStarted] = useState(false);
     const [loading, setLoading] = useState(true);
+    const [phase, setPhase] = useState<'LOADING' | 'ON_ROUTE'>('LOADING');
 
     const { user } = useAuth();
     const { toast } = useToast();
@@ -75,7 +81,13 @@ export const DriverDashboard = () => {
     }, [user]);
 
     const [showDeliveryUpload, setShowDeliveryUpload] = useState(false);
+    const [showAddDelivery, setShowAddDelivery] = useState(false);
     const [selectedDelivery, setSelectedDelivery] = useState<Delivery | null>(null);
+    const [showOccurrenceModal, setShowOccurrenceModal] = useState(false);
+    const [occurrenceDelivery, setOccurrenceDelivery] = useState<Delivery | null>(null);
+    const [occurrenceType, setOccurrenceType] = useState<'reentrega' | 'recusa' | 'avaria'>('reentrega');
+    const [occurrenceDescription, setOccurrenceDescription] = useState('');
+    const [reportingOccurrence, setReportingOccurrence] = useState(false);
 
     const [showDetailsModal, setShowDetailsModal] = useState(false);
     const [deliveryDetails, setDeliveryDetails] = useState<any>(null); // Para guardar os dados completos
@@ -92,6 +104,15 @@ export const DriverDashboard = () => {
     const [receiptImage, setReceiptImage] = useState<string | null>(null);
     const [receiptLoading, setReceiptLoading] = useState(false);
 
+    // OCR states for canhoto photo
+    const [ocrProcessing, setOcrProcessing] = useState(false);
+    const [ocrProgress, setOcrProgress] = useState(0);
+    const [ocrStatus, setOcrStatus] = useState('');
+    const [ocrResult, setOcrResult] = useState<NFeExtractedData | null>(null);
+    const [editOcrCnpj, setEditOcrCnpj] = useState('');
+    const [editOcrClient, setEditOcrClient] = useState('');
+    const [editOcrNf, setEditOcrNf] = useState('');
+
     const [hasLocationConsent, setHasLocationConsent] = useState<boolean>(() => {
         if (typeof window === 'undefined') return false;
         return localStorage.getItem('driver_location_consent') === 'true';
@@ -105,8 +126,12 @@ export const DriverDashboard = () => {
     const awaitingAccurateFixRef = useRef(false);
     const accuracyToastShownRef = useRef(false);
 
-
-
+    const driverIdForTracking = user?.driver_id || user?.id || '';
+    useDriverLocation({
+        driverId: driverIdForTracking,
+        active: locationActive,
+        intervalSeconds: 15,
+    });
 
     const stopLocationTracking = useCallback(() => {
         if (typeof navigator !== 'undefined' && navigator.geolocation && locationWatchId.current !== null) {
@@ -300,7 +325,8 @@ export const DriverDashboard = () => {
 
         try {
             const response = await apiService.getDeliveries({ 
-                 driver_id: driverIdToFetch 
+                 driver_id: driverIdToFetch,
+                 scheduled_date: new Date().toISOString().slice(0, 10),
             });
 
             if (response.success && Array.isArray(response.data) && response.data.length > 0) {
@@ -318,6 +344,8 @@ export const DriverDashboard = () => {
                             ? 'REALIZADA' 
                             : item.status === 'IN_TRANSIT'
                             ? 'EM_ANDAMENTO' 
+                            : item.status === 'ASSIGNED'
+                            ? 'PENDENTE'
                             : item.status === 'PENDING'
                             ? 'PENDENTE' 
                             : 'PROBLEMA',
@@ -332,16 +360,7 @@ export const DriverDashboard = () => {
                         return dateA - dateB;
                     });
 
-                // Keep completed deliveries visible until the day rolls over.
-                // Consider delivery_date_expected when available (backend may provide it in createdAt or separate field).
-                const todayIso = new Date().toISOString().slice(0, 10);
-                const filteredDeliveries = deliveriesData.filter((delivery) => {
-                    const createdAtIso = delivery.createdAt ? delivery.createdAt.slice(0, 10) : null;
-                    // Show delivery if it's from today (by createdAt) or if no date is present show it conservatively
-                    return createdAtIso === todayIso || createdAtIso === null;
-                });
-
-                setDeliveries(filteredDeliveries as Delivery[]);
+                setDeliveries(deliveriesData as Delivery[]);
 
             } else {
                 setDeliveries([]); 
@@ -365,6 +384,16 @@ export const DriverDashboard = () => {
             setLoading(false);
         }
     }, [resolveDriverId, toast]);
+
+    // Detecta fase automaticamente baseado no status das entregas
+    useEffect(() => {
+        const hasInTransitDeliveries = deliveries.some(d => d.status === 'EM_ANDAMENTO');
+        if (hasInTransitDeliveries) {
+            setPhase('ON_ROUTE');
+        } else {
+            setPhase('LOADING');
+        }
+    }, [deliveries]);
 
     useEffect(() => {
         const driverId = resolveDriverId();
@@ -489,6 +518,65 @@ const handleDisableLocation = () => {
         });
     };
 
+    const confirmDeliveryLoading = useCallback(async (deliveryId: string) => {
+        try {
+            const response = await apiService.confirmDeliveryLoading(deliveryId);
+            if (response.success) {
+                toast({
+                    title: 'Carga confirmada!',
+                    description: 'A entrega foi confirmada como carregada.'
+                });
+                await loadTodayDeliveries();
+            } else {
+                throw new Error((response as any).error || 'Erro ao confirmar carga');
+            }
+        } catch (error: any) {
+            toast({
+                title: 'Erro',
+                description: error.message || 'Não foi possível confirmar a carga.',
+                variant: 'destructive'
+            });
+        }
+    }, [toast, loadTodayDeliveries]);
+
+    const startRoute = useCallback(async () => {
+        try {
+            // Coleta IDs das entregas carregadas (REALIZADA na UI = ASSIGNED na API)
+            const assignedDeliveryIds = deliveries
+                .filter(d => d.status === 'REALIZADA') // Entregas confirmadas como carregadas
+                .map(d => d.id);
+
+            if (assignedDeliveryIds.length === 0) {
+                toast({
+                    title: 'Nenhuma entrega carregada',
+                    description: 'Você deve carregar pelo menos uma entrega antes de iniciar a rota.',
+                    variant: 'destructive'
+                });
+                return;
+            }
+
+            const response = await apiService.startRoute(assignedDeliveryIds);
+            if (response.success) {
+                toast({
+                    title: 'Rota iniciada!',
+                    description: 'Boa viagem! Lembre-se de fotografar os comprovantes.'
+                });
+                setPhase('ON_ROUTE');
+                setRouteStarted(true);
+                updateDriverStatus('online');
+                startLocationTracking();
+            } else {
+                throw new Error((response as any).error || 'Erro ao iniciar rota');
+            }
+        } catch (error: any) {
+            toast({
+                title: 'Erro ao iniciar rota',
+                description: error.message || 'Não foi possível iniciar a rota. Tente novamente.',
+                variant: 'destructive'
+            });
+        }
+    }, [deliveries, toast, updateDriverStatus, startLocationTracking]);
+
     const getStatusColor = (status: string) => {
         switch (status) {
             case 'REALIZADA': return 'bg-green-500 text-white';
@@ -540,13 +628,34 @@ const handleDisableLocation = () => {
 
         setIsUploading(true);
         try {
-            const response = await apiService.attachReceipt(selectedDelivery.id, driverId, capturedPhoto.file);
+            // Process OCR on the canhoto photo
+            let ocrData: Record<string, any> | undefined;
+            if (ocrResult) {
+                ocrData = {
+                    cnpj: editOcrCnpj,
+                    clientName: editOcrClient,
+                    nfNumber: editOcrNf,
+                    rawText: ocrResult.rawText,
+                    confidence: ocrResult.confidence,
+                };
+            }
+
+            const response = await apiService.attachReceipt(
+                selectedDelivery.id,
+                driverId,
+                capturedPhoto.file,
+                { notes: ocrData ? `OCR: CNPJ=${editOcrCnpj} NF=${editOcrNf} Cliente=${editOcrClient}` : undefined }
+            );
             if (response.success) {
+                // If we have OCR data and a receipt was created, update it
+                if (ocrData && response.data?.id) {
+                    await apiService.processReceiptOCR(response.data.id, ocrData);
+                }
+
                 toast({
                     title: "Sucesso!",
                     description: "Comprovante enviado e entrega finalizada.",
                 });
-                // ATUALIZAÇÃO: Atualiza o estado local para refletir a mudança imediatamente
                 setDeliveries(prevDeliveries =>
                     prevDeliveries.map(d =>
                         d.id === selectedDelivery.id
@@ -556,8 +665,10 @@ const handleDisableLocation = () => {
                 );
                 setShowPhotoConfirmModal(false);
                 setCapturedPhoto(null);
-                // Opcional: pode remover o loadTodayDeliveries() se a atualização local for suficiente
-                // loadTodayDeliveries(); 
+                setOcrResult(null);
+                setEditOcrCnpj('');
+                setEditOcrClient('');
+                setEditOcrNf('');
             } else {
                 throw new Error((response as any).message || 'Erro desconhecido');
             }
@@ -572,9 +683,97 @@ const handleDisableLocation = () => {
         }
     };
 
+    // Process OCR on captured canhoto photo
+    const handleOcrOnPhoto = async () => {
+        if (!capturedPhoto) return;
+        setOcrProcessing(true);
+        setOcrProgress(0);
+        setOcrStatus('Iniciando...');
+        try {
+            const result = await processImageOCR(capturedPhoto.file, (progress, status) => {
+                setOcrProgress(progress);
+                setOcrStatus(status);
+            });
+            setOcrResult(result);
+            setEditOcrCnpj(result.cnpj);
+            setEditOcrClient(result.clientName);
+            setEditOcrNf(result.nfNumber);
+            const fieldsFound = [result.cnpj, result.clientName, result.nfNumber].filter(Boolean).length;
+            toast({
+                title: 'OCR concluído',
+                description: fieldsFound > 0
+                    ? `${fieldsFound} campo(s) identificado(s)`
+                    : 'Nenhum dado encontrado automaticamente.',
+            });
+        } catch (err) {
+            toast({ title: 'Erro no OCR', description: 'Tente novamente', variant: 'destructive' });
+        } finally {
+            setOcrProcessing(false);
+        }
+    };
+
     const handleUploadButtonClick = (delivery: Delivery) => {
         setSelectedDelivery(delivery);
         setShowDeliveryUpload(true);
+    };
+
+    const handleOpenOccurrence = (delivery: Delivery) => {
+        setOccurrenceDelivery(delivery);
+        setOccurrenceType('reentrega');
+        setOccurrenceDescription('');
+        setShowOccurrenceModal(true);
+    };
+
+    const handleReportOccurrence = async () => {
+        if (!occurrenceDelivery || !occurrenceDescription.trim()) {
+            toast({
+                title: 'Observação obrigatória',
+                description: 'Descreva o que impediu a entrega.',
+                variant: 'destructive',
+            });
+            return;
+        }
+
+        setReportingOccurrence(true);
+        try {
+            const response = await apiService.createOccurrence(occurrenceDelivery.id, {
+                type: occurrenceType,
+                description: occurrenceDescription.trim(),
+                latitude: lastKnownPosition?.coords.latitude,
+                longitude: lastKnownPosition?.coords.longitude,
+            });
+
+            if (!response.success) {
+                throw new Error(response.error || 'Não foi possível registrar a ocorrência.');
+            }
+
+            const nextDate = (response.data as any)?.next_scheduled_date;
+            toast({
+                title: 'Ocorrência registrada',
+                description: nextDate
+                    ? `Entrega reagendada para ${new Date(`${nextDate}T00:00:00`).toLocaleDateString('pt-BR')}.`
+                    : 'A ocorrência foi enviada para a operação.',
+            });
+
+            setDeliveries(prev =>
+                prev.map(delivery =>
+                    delivery.id === occurrenceDelivery.id
+                        ? { ...delivery, status: 'PROBLEMA' }
+                        : delivery
+                )
+            );
+            setShowOccurrenceModal(false);
+            setOccurrenceDelivery(null);
+            setOccurrenceDescription('');
+        } catch (error: any) {
+            toast({
+                title: 'Erro ao reportar',
+                description: error.message || 'Tente novamente em instantes.',
+                variant: 'destructive',
+            });
+        } finally {
+            setReportingOccurrence(false);
+        }
     };
 
     const getInitialDataForUpload = () => {
@@ -665,50 +864,93 @@ const handleDisableLocation = () => {
                 </CardContent>
             </Card>
 
-            <div className="grid grid-cols-2 gap-4">
-                <Card>
-                    <CardContent className="pt-6">
-                        <div className="text-center">
-                            <Package className="h-8 w-8 mx-auto text-blue-600 mb-2" />
-                            <div className="text-2xl font-bold">{deliveries.length}</div>
-                            <p className="text-sm text-gray-500">Total Entregas</p>
-                        </div>
-                    </CardContent>
-                </Card>
-
-                <Card>
-                    <CardContent className="pt-6">
-                        <div className="text-center">
-                            <CheckCircle className="h-8 w-8 mx-auto text-green-600 mb-2" />
-                            <div className="text-2xl font-bold">
-                                {deliveries.filter(d => d.status === 'REALIZADA').length}
+            {phase === 'LOADING' ? (
+                // FASE LOADING: Carregamento do dia
+                <Card className="border-2 border-blue-500 bg-blue-50">
+                    <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                            <Package className="h-5 w-5" />
+                            Carregamento do Dia
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="text-center">
+                                <div className="text-2xl font-bold text-blue-600">
+                                    {deliveries.filter(d => d.status === 'PENDENTE').length}
+                                </div>
+                                <p className="text-xs text-gray-600">NFs Pré-atribuídas</p>
                             </div>
-                            <p className="text-sm text-gray-500">Concluídas</p>
+                            <div className="text-center">
+                                <div className="text-2xl font-bold text-green-600">
+                                    {deliveries.filter(d => d.status === 'REALIZADA').length}
+                                </div>
+                                <p className="text-xs text-gray-600">NFs Carregadas</p>
+                            </div>
                         </div>
                     </CardContent>
                 </Card>
-            </div>
+            ) : (
+                // FASE ON_ROUTE: Rota em andamento
+                <div className="grid grid-cols-2 gap-4">
+                    <Card>
+                        <CardContent className="pt-6">
+                            <div className="text-center">
+                                <Package className="h-8 w-8 mx-auto text-blue-600 mb-2" />
+                                <div className="text-2xl font-bold">{deliveries.length}</div>
+                                <p className="text-sm text-gray-500">Total Entregas</p>
+                            </div>
+                        </CardContent>
+                    </Card>
+
+                    <Card>
+                        <CardContent className="pt-6">
+                            <div className="text-center">
+                                <CheckCircle className="h-8 w-8 mx-auto text-green-600 mb-2" />
+                                <div className="text-2xl font-bold">
+                                    {deliveries.filter(d => d.status === 'REALIZADA').length}
+                                </div>
+                                <p className="text-sm text-gray-500">Concluídas</p>
+                            </div>
+                        </CardContent>
+                    </Card>
+                </div>
+            )}
 
             <Card>
                 <CardHeader>
                     <CardTitle className="flex items-center gap-2">
                         <Camera className="h-5 w-5" />
-                        Ações Rápidas
+                        {phase === 'LOADING' ? 'Preparar Entrega' : 'Ações Rápidas'}
                     </CardTitle>
                 </CardHeader>
                 <CardContent className="grid gap-3">
-                    <Button
-                        variant="outline"
-                        className="justify-start h-12"
-                        onClick={() => { setSelectedDelivery(null); setShowDeliveryUpload(true); }}
-                    >
-                        <Upload className="mr-3 h-4 w-4" />
-                        <div className="text-left">
-                            <div className="font-medium">Cadastrar Entrega Manual</div>
-                            <div className="text-xs text-gray-500">Usar documento SEFAZ</div>
-                        </div>
-                    </Button>
-                    
+                    {phase === 'LOADING' ? (
+                        <Button
+                            variant="outline"
+                            className="justify-start h-12"
+                            onClick={() => setShowAddDelivery(true)}
+                        >
+                            <Plus className="mr-3 h-4 w-4" />
+                            <div className="text-left">
+                                <div className="font-medium">+ Adicionar NF</div>
+                                <div className="text-xs text-gray-500">Adicione novas entregas</div>
+                            </div>
+                        </Button>
+                    ) : (
+                        <Button
+                            variant="outline"
+                            className="justify-start h-12"
+                            onClick={() => { setSelectedDelivery(null); setShowDeliveryUpload(true); }}
+                        >
+                            <Upload className="mr-3 h-4 w-4" />
+                            <div className="text-left">
+                                <div className="font-medium">Cadastrar Entrega Manual</div>
+                                <div className="text-xs text-gray-500">Usar documento SEFAZ</div>
+                            </div>
+                        </Button>
+                    )}
+
                     {routeStarted && (
                         <div className="pl-12 mt-2 text-xs text-gray-500">
                             {requestingLocation
@@ -723,89 +965,189 @@ const handleDisableLocation = () => {
                 </CardContent>
             </Card>
 
-            <Card>
-                <CardHeader>
-                    <CardTitle>Minhas Entregas - Hoje</CardTitle>
-                </CardHeader>
-                <CardContent>
-                    {deliveries.length === 0 ? (
-                        <div className="text-center py-8">
-                            <Package className="h-12 w-12 mx-auto text-gray-400 mb-4" />
-                            <p className="text-gray-500">Nenhuma entrega programada para hoje</p>
-                        </div>
-                    ) : (
-                        <div className="space-y-4">
-        
-                        {deliveries.map((delivery) => (
-                            
-                            <Card key={delivery.id} className="border">
-                                <CardContent className="pt-4">
-                                    
-                                    {/* Bloco de NF, Nome e Status */}
-                                    <div className="flex items-start justify-between mb-3">
-                                        <div>
-                                            <p className="font-medium">NF {delivery.nfNumber}</p>
-                                            <p className="text-sm text-gray-500">{delivery.client}</p>
-                                        </div>
-                                        <Badge className={getStatusColor(delivery.status)}>
-                                            {getStatusText(delivery.status)}
-                                        </Badge>
-                                    </div>
-
-                                    {/* Bloco de ENDEREÇO */}
-                                    <div className="space-y-2 text-sm">
-                                        <div className="flex items-center gap-2">
-                                            <MapPin className="h-4 w-4 text-gray-500" />
-                                            <span className="text-gray-500">{delivery.address}</span>
-                                        </div>
-                                        
-                                        {/* VALOR E VOLUME REMOVIDOS DE PROPÓSITO */}
-                                        
-                                    </div>
-
-                                    {/* Bloco de AÇÕES (Botões) */}
-                                    <div className="mt-4 flex gap-2 items-center justify-between">
-                                        
-                                        {/* BOTÃO VER DETALHES */}
-                                        <Button 
-                                            size="sm" 
-                                            variant="outline" 
-                                            onClick={() => handleViewDetails(delivery)} // <<-- Handler para abrir o modal
-                                        >
-                                            Ver Detalhes
-                                        </Button>
-
-                                        {/* Renderização condicional do botão Fotografar/Finalizada */}
-                                        {delivery.status !== 'REALIZADA' && !delivery.hasReceipt && (
-                                            <Button size="sm" onClick={() => handleTakePhotoClick(delivery)}>
-                                                <Camera className="mr-2 h-4 w-4" />
-                                                Fotografar Canhoto
-                                            </Button>
-                                        )}
-                                        {delivery.hasReceipt && delivery.receiptImageUrl && (
-                                            <div className="flex items-center gap-2 text-green-600">
-                                                <CheckCircle className="h-4 w-4" />
-                                                <button
-                                                    onClick={() => handleViewReceipt(delivery.receiptImageUrl!)}
-                                                    className="text-sm font-medium text-blue-600 hover:underline disabled:text-gray-400"
-                                                    disabled={receiptLoading}
+            {phase === 'LOADING' ? (
+                // FASE LOADING: Seções de Carregamento
+                <>
+                    {/* Seção 1: NFs Pré-atribuídas (PENDENTE) */}
+                    <Card>
+                        <CardHeader>
+                            <CardTitle className="flex items-center gap-2">
+                                <Package className="h-5 w-5" />
+                                NFs Pré-atribuídas ({deliveries.filter(d => d.status === 'PENDENTE').length})
+                            </CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                            {deliveries.filter(d => d.status === 'PENDENTE').length === 0 ? (
+                                <div className="text-center py-8">
+                                    <Package className="h-12 w-12 mx-auto text-gray-400 mb-4" />
+                                    <p className="text-gray-500">Nenhuma NF pré-atribuída</p>
+                                </div>
+                            ) : (
+                                <div className="space-y-3">
+                                    {deliveries.filter(d => d.status === 'PENDENTE').map((delivery) => (
+                                        <Card key={delivery.id} className="border-l-4 border-l-yellow-500">
+                                            <CardContent className="pt-3">
+                                                <div className="flex items-start justify-between mb-2">
+                                                    <div>
+                                                        <p className="font-medium">NF {delivery.nfNumber}</p>
+                                                        <p className="text-sm text-gray-500">{delivery.client}</p>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-2 text-sm mb-3">
+                                                    <MapPin className="h-4 w-4 text-gray-500" />
+                                                    <span className="text-gray-500">{delivery.address}</span>
+                                                </div>
+                                                <Button
+                                                    size="sm"
+                                                    onClick={() => confirmDeliveryLoading(delivery.id)}
+                                                    className="w-full"
                                                 >
-                                                    Ver Canhoto
-                                                </button>
+                                                    <CheckCircle className="mr-2 h-4 w-4" />
+                                                    Confirmar Carga
+                                                </Button>
+                                            </CardContent>
+                                        </Card>
+                                    ))}
+                                </div>
+                            )}
+                        </CardContent>
+                    </Card>
+
+                    {/* Seção 2: NFs Carregadas (REALIZADA para exibição de carregadas) */}
+                    <Card>
+                        <CardHeader>
+                            <CardTitle className="flex items-center gap-2">
+                                <CheckCircle className="h-5 w-5 text-green-600" />
+                                NFs Carregadas ({deliveries.filter(d => d.status === 'REALIZADA').length})
+                            </CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                            {deliveries.filter(d => d.status === 'REALIZADA').length === 0 ? (
+                                <div className="text-center py-8">
+                                    <Package className="h-12 w-12 mx-auto text-gray-400 mb-4" />
+                                    <p className="text-gray-500">Nenhuma NF carregada ainda</p>
+                                </div>
+                            ) : (
+                                <div className="space-y-3">
+                                    {deliveries.filter(d => d.status === 'REALIZADA').map((delivery) => (
+                                        <Card key={delivery.id} className="border-l-4 border-l-green-500 bg-green-50">
+                                            <CardContent className="pt-3">
+                                                <div className="flex items-start justify-between">
+                                                    <div>
+                                                        <p className="font-medium">NF {delivery.nfNumber}</p>
+                                                        <p className="text-sm text-gray-500">{delivery.client}</p>
+                                                    </div>
+                                                    <CheckCircle className="h-5 w-5 text-green-600" />
+                                                </div>
+                                            </CardContent>
+                                        </Card>
+                                    ))}
+                                </div>
+                            )}
+                        </CardContent>
+                    </Card>
+
+                    {/* Botão Iniciar Rota */}
+                    <Button
+                        onClick={startRoute}
+                        className="bg-green-600 hover:bg-green-700 w-full h-14 text-lg font-semibold"
+                        disabled={deliveries.filter(d => d.status === 'REALIZADA').length === 0}
+                    >
+                        <Route className="mr-2 h-5 w-5" />
+                        Iniciar Rota ({deliveries.filter(d => d.status === 'REALIZADA').length} NFs)
+                    </Button>
+                </>
+            ) : (
+                // FASE ON_ROUTE: Lista de Entregas Normal
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Minhas Entregas - Hoje</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        {deliveries.length === 0 ? (
+                            <div className="text-center py-8">
+                                <Package className="h-12 w-12 mx-auto text-gray-400 mb-4" />
+                                <p className="text-gray-500">Nenhuma entrega programada para hoje</p>
+                            </div>
+                        ) : (
+                            <div className="space-y-4">
+
+                            {deliveries.map((delivery) => (
+
+                                <Card key={delivery.id} className="border">
+                                    <CardContent className="pt-4">
+
+                                        {/* Bloco de NF, Nome e Status */}
+                                        <div className="flex items-start justify-between mb-3">
+                                            <div>
+                                                <p className="font-medium">NF {delivery.nfNumber}</p>
+                                                <p className="text-sm text-gray-500">{delivery.client}</p>
                                             </div>
-                                        )}
-                                        {delivery.hasReceipt && !delivery.receiptImageUrl && (
-                                            <div className="flex items-center gap-2 text-green-600">
-                                                <CheckCircle className="h-4 w-4" />
-                                                <span className="text-sm">Entrega Finalizada</span>
+                                            <Badge className={getStatusColor(delivery.status)}>
+                                                {getStatusText(delivery.status)}
+                                            </Badge>
+                                        </div>
+
+                                        {/* Bloco de ENDEREÇO */}
+                                        <div className="space-y-2 text-sm">
+                                            <div className="flex items-center gap-2">
+                                                <MapPin className="h-4 w-4 text-gray-500" />
+                                                <span className="text-gray-500">{delivery.address}</span>
                                             </div>
-                                        )}
-                                    </div>
-                                </CardContent>
-                            </Card>
-                        ))}
-                        
-                        <Dialog open={showDetailsModal} onOpenChange={setShowDetailsModal}>
+
+                                            {/* VALOR E VOLUME REMOVIDOS DE PROPÓSITO */}
+
+                                        </div>
+
+                                        {/* Bloco de AÇÕES (Botões) */}
+                                        <div className="mt-4 flex gap-2 items-center justify-between">
+
+                                            {/* BOTÃO VER DETALHES */}
+                                            <Button
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={() => handleViewDetails(delivery)} // <<-- Handler para abrir o modal
+                                            >
+                                                Ver Detalhes
+                                            </Button>
+
+                                            {/* Renderização condicional do botão Fotografar/Finalizada */}
+                                            {delivery.status !== 'REALIZADA' && !delivery.hasReceipt && (
+                                                <Button size="sm" onClick={() => handleTakePhotoClick(delivery)}>
+                                                    <Camera className="mr-2 h-4 w-4" />
+                                                    Fotografar Canhoto
+                                                </Button>
+                                            )}
+                                            {delivery.status !== 'REALIZADA' && !delivery.hasReceipt && (
+                                                <Button size="sm" variant="destructive" onClick={() => handleOpenOccurrence(delivery)}>
+                                                    <AlertTriangle className="mr-2 h-4 w-4" />
+                                                    Reportar Problema
+                                                </Button>
+                                            )}
+                                            {delivery.hasReceipt && delivery.receiptImageUrl && (
+                                                <div className="flex items-center gap-2 text-green-600">
+                                                    <CheckCircle className="h-4 w-4" />
+                                                    <button
+                                                        onClick={() => handleViewReceipt(delivery.receiptImageUrl!)}
+                                                        className="text-sm font-medium text-blue-600 hover:underline disabled:text-gray-400"
+                                                        disabled={receiptLoading}
+                                                    >
+                                                        Ver Canhoto
+                                                    </button>
+                                                </div>
+                                            )}
+                                            {delivery.hasReceipt && !delivery.receiptImageUrl && (
+                                                <div className="flex items-center gap-2 text-green-600">
+                                                    <CheckCircle className="h-4 w-4" />
+                                                    <span className="text-sm">Entrega Finalizada</span>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </CardContent>
+                                </Card>
+                            ))}
+
+                            <Dialog open={showDetailsModal} onOpenChange={setShowDetailsModal}>
                             <DialogContent className="sm:max-w-[425px] max-h-[90vh] overflow-y-auto">
                                 <DialogHeader>
                                     <DialogTitle>{deliveryDetails ? `Detalhes NF ${deliveryDetails.nfNumber}` : 'Carregando Detalhes...'}</DialogTitle>
@@ -954,10 +1296,12 @@ const handleDisableLocation = () => {
                     )}
                 </CardContent>
             </Card>
+            )}
 
-            <DeliveryUpload
+            <SimpleDeliveryForm
                 open={showDeliveryUpload}
                 onOpenChange={setShowDeliveryUpload}
+                mode="driver"
                 onSuccess={() => {
                     loadTodayDeliveries();
                     toast({
@@ -965,7 +1309,21 @@ const handleDisableLocation = () => {
                         description: "A entrega foi cadastrada com sucesso!",
                     });
                 }}
-                initialData={getInitialDataForUpload()}
+            />
+
+            {/* SimpleDeliveryForm para Adicionar NF na Fase LOADING */}
+            <SimpleDeliveryForm
+                open={showAddDelivery}
+                onOpenChange={setShowAddDelivery}
+                mode="driver"
+                onSuccess={() => {
+                    setShowAddDelivery(false);
+                    loadTodayDeliveries();
+                    toast({
+                        title: "NF adicionada com sucesso!",
+                        description: "A entrega foi adicionada à sua carga.",
+                    });
+                }}
             />
 
             {/* Modal para Visualizar o Canhoto */}
@@ -986,6 +1344,49 @@ const handleDisableLocation = () => {
                     </div>
                     <DialogFooter>
                         <Button variant="secondary" onClick={() => setShowReceiptModal(false)}>Fechar</Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            <Dialog open={showOccurrenceModal} onOpenChange={setShowOccurrenceModal}>
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>Reportar Problema</DialogTitle>
+                        <DialogDescription>
+                            NF {occurrenceDelivery?.nfNumber}. A entrega será reagendada automaticamente para o próximo dia.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Tipo</label>
+                            <Select value={occurrenceType} onValueChange={(value: 'reentrega' | 'recusa' | 'avaria') => setOccurrenceType(value)}>
+                                <SelectTrigger>
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="reentrega">Reentrega</SelectItem>
+                                    <SelectItem value="recusa">Recusa</SelectItem>
+                                    <SelectItem value="avaria">Avaria</SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Observação</label>
+                            <Textarea
+                                value={occurrenceDescription}
+                                onChange={(event) => setOccurrenceDescription(event.target.value)}
+                                placeholder="Ex: destinatário ausente, estabelecimento fechado, mercadoria recusada..."
+                                rows={4}
+                            />
+                        </div>
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setShowOccurrenceModal(false)} disabled={reportingOccurrence}>
+                            Cancelar
+                        </Button>
+                        <Button onClick={handleReportOccurrence} disabled={reportingOccurrence || !occurrenceDescription.trim()}>
+                            {reportingOccurrence ? 'Enviando...' : 'Registrar e Reagendar'}
+                        </Button>
                     </DialogFooter>
                 </DialogContent>
             </Dialog>
@@ -1013,20 +1414,85 @@ const handleDisableLocation = () => {
                 </DialogContent>
             </Dialog>
 
-            {/* Modal de Confirmação da Foto */}
+            {/* Modal de Confirmação da Foto com OCR */}
             <Dialog open={showPhotoConfirmModal} onOpenChange={setShowPhotoConfirmModal}>
-                <DialogContent>
+                <DialogContent className="max-h-[90vh] overflow-y-auto">
                     <DialogHeader>
-                        <DialogTitle>Confirmar Foto do Canhoto</DialogTitle>
+                        <DialogTitle>Confirmar Canhoto — NF {selectedDelivery?.nfNumber}</DialogTitle>
                         <DialogDescription>
-                            Esta foto será anexada à entrega NF {selectedDelivery?.nfNumber}. Deseja continuar?
+                            Foto do canhoto assinado. Você pode processar OCR para identificar os dados.
                         </DialogDescription>
                     </DialogHeader>
                     {capturedPhoto && (
-                        <img src={capturedPhoto.dataUrl} alt="Prévia do canhoto" className="rounded-md max-h-80 w-full object-contain" />
+                        <img src={capturedPhoto.dataUrl} alt="Prévia do canhoto" className="rounded-md max-h-60 w-full object-contain" />
                     )}
+
+                    {/* OCR section */}
+                    {!ocrResult && !ocrProcessing && (
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={handleOcrOnPhoto}
+                            disabled={!capturedPhoto}
+                            className="gap-1"
+                        >
+                            <Eye className="h-4 w-4" />
+                            Identificar dados via OCR
+                        </Button>
+                    )}
+
+                    {ocrProcessing && (
+                        <div className="space-y-2 p-3 bg-blue-50 rounded-lg">
+                            <div className="flex items-center gap-2">
+                                <div className="h-4 w-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                                <span className="text-xs font-medium text-blue-800">{ocrStatus}</span>
+                            </div>
+                            <div className="w-full bg-blue-200 rounded-full h-1.5">
+                                <div
+                                    className="bg-blue-600 h-1.5 rounded-full transition-all duration-300"
+                                    style={{ width: `${ocrProgress}%` }}
+                                />
+                            </div>
+                        </div>
+                    )}
+
+                    {ocrResult && (
+                        <div className="space-y-3 p-3 bg-gray-50 rounded-lg border">
+                            <p className="text-xs font-medium text-gray-700">Dados identificados (editáveis):</p>
+                            <div className="grid grid-cols-2 gap-2">
+                                <div className="space-y-1">
+                                    <label className="text-xs text-gray-500">CNPJ</label>
+                                    <input
+                                        value={editOcrCnpj}
+                                        onChange={(e) => setEditOcrCnpj(e.target.value)}
+                                        className="w-full text-sm border rounded px-2 py-1"
+                                        placeholder="00.000.000/0000-00"
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-xs text-gray-500">Nº NF-e</label>
+                                    <input
+                                        value={editOcrNf}
+                                        onChange={(e) => setEditOcrNf(e.target.value)}
+                                        className="w-full text-sm border rounded px-2 py-1"
+                                        placeholder="12345"
+                                    />
+                                </div>
+                                <div className="col-span-2 space-y-1">
+                                    <label className="text-xs text-gray-500">Cliente</label>
+                                    <input
+                                        value={editOcrClient}
+                                        onChange={(e) => setEditOcrClient(e.target.value)}
+                                        className="w-full text-sm border rounded px-2 py-1"
+                                        placeholder="Nome do cliente"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     <DialogFooter className="grid grid-cols-2 gap-2">
-                        <Button variant="outline" onClick={() => { setShowPhotoConfirmModal(false); setCapturedPhoto(null); }} disabled={isUploading}>
+                        <Button variant="outline" onClick={() => { setShowPhotoConfirmModal(false); setCapturedPhoto(null); setOcrResult(null); }} disabled={isUploading}>
                             Tirar Outra
                         </Button>
                         <Button onClick={handleConfirmPhoto} disabled={isUploading}>
