@@ -170,14 +170,21 @@ const Tracking = () => {
                             || (payload.old as Record<string, unknown>)?.motorista_id as string;
           if (!motoristaId) return;
 
+          console.debug('[Tracking] Realtime event recebido:', payload.eventType, motoristaId);
+
           // Re-fetch desta linha na view (converte geography → lat/lon)
-          const { data: row } = await supabase
+          const { data: row, error: rowError } = await supabase
             .from('v_motoristas_posicao')
             .select('motorista_id, driver_name, latitude, longitude, updated_at')
             .eq('motorista_id', motoristaId)
             .single();
 
+          if (rowError) {
+            console.warn('[Tracking] Erro ao buscar linha atualizada:', rowError);
+            return;
+          }
           if (!row || !isMounted) return;
+          if (!Number.isFinite(row.latitude) || !Number.isFinite(row.longitude)) return;
 
           const now = Date.now();
           setLocations((prev) => {
@@ -201,7 +208,12 @@ const Tracking = () => {
           });
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.info('[Tracking] Realtime channel status:', status);
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          setError('Conexão em tempo real perdida. Recarregue para tentar novamente.');
+        }
+      });
 
     // Re-calcular status "offline" a cada 30s (sem chamada de rede)
     const offlineTimer = setInterval(() => {

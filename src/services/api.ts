@@ -3,6 +3,7 @@ import type { CompanyRow, DeliveryStatus, DriverStatus, ProfileRow } from '@/int
 import { buildRetryDeliveryPayload, getNextScheduledDate } from '@/lib/delivery-attempts';
 import { normalizeBrazilianDocument } from '@/lib/documents';
 import { normalizeRole } from '@/lib/roles';
+import { buildProfilePayload } from '@/lib/user-creation';
 
 export type ApiResponse<T> = { success: true; data: T } | { success: false; error: string };
 
@@ -390,42 +391,45 @@ class ApiService {
         });
       }
 
-      // O trigger handle_new_user() já criou o profile automaticamente
-      // Apenas atualizamos com os dados completos
+      const profilePayload = buildProfilePayload({
+        authUserId: signUpData.user.id,
+        companyId,
+        email: payload.email,
+        username: payload.username || payload.email,
+        fullName,
+        role,
+        document,
+        status: payload.status || 'ATIVO',
+        isActive: payload.is_active ?? true,
+      });
+
       const { data: profile, error: profileError } = await supabase
         .from('profiles')
-        .update({
-          company_id: companyId,
-          username: payload.username || payload.email,
-          full_name: fullName,
-          role,
-          cpf: document,
-          status: payload.status || 'ATIVO',
-          is_active: payload.is_active ?? true,
-        })
-        .eq('auth_user_id', signUpData.user.id)
+        .upsert(profilePayload, { onConflict: 'auth_user_id' })
         .select()
         .single();
       if (profileError) throw profileError;
 
       if (role === 'DRIVER') {
-        await supabase.from('drivers').insert({
+        const { error: driverError } = await supabase.from('drivers').insert({
           company_id: companyId,
           profile_id: profile.id,
           name: fullName,
           cpf: document,
           status: payload.status || 'ATIVO',
         });
+        if (driverError) throw driverError;
       }
 
       if (role === 'CLIENT') {
-        await supabase.from('clients').insert({
+        const { error: clientError } = await supabase.from('clients').insert({
           company_id: companyId,
           profile_id: profile.id,
           name: fullName,
           email: payload.email,
           document,
         });
+        if (clientError) throw clientError;
       }
 
       let userCompany = context.company;

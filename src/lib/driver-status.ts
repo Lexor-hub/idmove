@@ -61,6 +61,8 @@ export const computeMovementStatus = (
   return "moving";
 };
 
+export { OFFLINE_THRESHOLD_MS, STOP_TIME_THRESHOLD_MS, MOVING_SPEED_THRESHOLD };
+
 export const getMovementStatusTw = (status: MovementStatus) => STATUS_TW_COLORS[status];
 
 export const getMovementStatusHex = (status: MovementStatus) => STATUS_HEX_COLORS[status];

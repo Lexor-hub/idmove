@@ -8,6 +8,11 @@ const config: CapacitorConfig = {
     androidScheme: 'https',
   },
   plugins: {
+    SplashScreen: {
+      launchShowDuration: 2000,
+      backgroundColor: '#2563eb',
+      showSpinner: false,
+    },
     BackgroundGeolocation: {
       locationAuthorizationAlert: {
         titleWhenNotEnabled: 'Localização necessária',

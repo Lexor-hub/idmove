@@ -62,6 +62,17 @@ interface ApiDelivery {
 const GPS_ACCURACY_THRESHOLD_METERS = 50;
 const GPS_ACCURACY_GRACE_PERIOD_MS = 15000;
 
+type WakeLockSentinelLike = EventTarget & {
+    released: boolean;
+    release: () => Promise<void>;
+};
+
+type NavigatorWithWakeLock = Navigator & {
+    wakeLock?: {
+        request: (type: 'screen') => Promise<WakeLockSentinelLike>;
+    };
+};
+
 export const DriverDashboard = () => {
     const [deliveries, setDeliveries] = useState<Delivery[]>([]);
     const [routeStarted, setRouteStarted] = useState(false);
@@ -121,6 +132,9 @@ export const DriverDashboard = () => {
     const [locationActive, setLocationActive] = useState(false);
     const [requestingLocation, setRequestingLocation] = useState(false);
     const locationWatchId = useRef<number | null>(null);
+    const wakeLockRef = useRef<WakeLockSentinelLike | null>(null);
+    const [screenAwake, setScreenAwake] = useState(false);
+    const [wakeLockUnavailable, setWakeLockUnavailable] = useState(false);
     const [lastKnownPosition, setLastKnownPosition] = useState<GeolocationPosition | null>(null);
     const trackingStartTimestampRef = useRef<number | null>(null);
     const awaitingAccurateFixRef = useRef(false);
@@ -132,6 +146,49 @@ export const DriverDashboard = () => {
         active: locationActive,
         intervalSeconds: 15,
     });
+
+    const releaseWakeLock = useCallback(async () => {
+        const sentinel = wakeLockRef.current;
+        wakeLockRef.current = null;
+        setScreenAwake(false);
+
+        if (sentinel && !sentinel.released) {
+            try {
+                await sentinel.release();
+            } catch (error) {
+                console.debug('[DriverDashboard] Nao foi possivel liberar Wake Lock:', error);
+            }
+        }
+    }, []);
+
+    const requestWakeLock = useCallback(async () => {
+        if (typeof navigator === 'undefined') return;
+
+        const nav = navigator as NavigatorWithWakeLock;
+        if (!nav.wakeLock) {
+            setWakeLockUnavailable(true);
+            setScreenAwake(false);
+            return;
+        }
+
+        try {
+            const sentinel = await nav.wakeLock.request('screen');
+            wakeLockRef.current = sentinel;
+            setWakeLockUnavailable(false);
+            setScreenAwake(true);
+
+            sentinel.addEventListener('release', () => {
+                if (wakeLockRef.current === sentinel) {
+                    wakeLockRef.current = null;
+                    setScreenAwake(false);
+                }
+            });
+        } catch (error) {
+            setWakeLockUnavailable(true);
+            setScreenAwake(false);
+            console.debug('[DriverDashboard] Wake Lock indisponivel:', error);
+        }
+    }, []);
 
     const stopLocationTracking = useCallback(() => {
         if (typeof navigator !== 'undefined' && navigator.geolocation && locationWatchId.current !== null) {
@@ -176,9 +233,12 @@ export const DriverDashboard = () => {
 
             if (!accuracyToastShownRef.current) {
                 accuracyToastShownRef.current = true;
+                const accuracyText = numericAccuracy !== null
+                    ? `${Math.round(numericAccuracy)}m`
+                    : 'desconhecida';
                 toast({
                     title: 'Ajustando precisão do GPS',
-                    description: `Aguardando um sinal de GPS mais preciso (atual: ±m)`,
+                    description: `Aguardando um sinal de GPS mais preciso (atual: ±${accuracyText})`,
                 });
             }
 
@@ -413,6 +473,29 @@ export const DriverDashboard = () => {
             stopLocationTracking();
         };
     }, [stopLocationTracking]);
+
+    useEffect(() => {
+        if (routeStarted) {
+            requestWakeLock();
+            return;
+        }
+
+        releaseWakeLock();
+    }, [routeStarted, requestWakeLock, releaseWakeLock]);
+
+    useEffect(() => {
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'visible' && routeStarted) {
+                requestWakeLock();
+            }
+        };
+
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        return () => {
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+            releaseWakeLock();
+        };
+    }, [routeStarted, requestWakeLock, releaseWakeLock]);
 
     const handleStartDay = () => {
         setDayStarted(true);
@@ -860,6 +943,29 @@ const handleDisableLocation = () => {
                                 Finalizar Rota
                             </Button>
                         )}
+                    </div>
+                </CardContent>
+            </Card>
+
+            <Card className="border-blue-200 bg-blue-50">
+                <CardContent className="pt-4">
+                    <div className="flex items-start gap-3 text-sm text-blue-950">
+                        <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-blue-700" />
+                        <div className="space-y-1">
+                            <p className="font-semibold">Modo entrega pelo navegador</p>
+                            <p>
+                                Mantenha esta tela aberta e ligada durante a rota. No navegador, o rastreamento pode pausar se o celular bloquear a tela ou se o app ficar em segundo plano.
+                            </p>
+                            {routeStarted && (
+                                <p className="text-xs text-blue-800">
+                                    {screenAwake
+                                        ? 'Protecao de tela ativa enquanto a rota estiver em andamento.'
+                                        : wakeLockUnavailable
+                                            ? 'Nao foi possivel manter a tela ligada automaticamente neste navegador. Ajuste o tempo de bloqueio do celular.'
+                                            : 'Tentando manter a tela ligada enquanto a rota estiver ativa.'}
+                                </p>
+                            )}
+                        </div>
                     </div>
                 </CardContent>
             </Card>
