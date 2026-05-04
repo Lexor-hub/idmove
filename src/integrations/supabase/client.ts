@@ -1,37 +1,27 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const SUPABASE_URL = 'https://jmxckbbunoyrsxkaubmi.supabase.co';
+const SUPABASE_ANON_KEY =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpteGNrYmJ1bm95cnN4a2F1Ym1pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc2MDcyMDksImV4cCI6MjA5MzE4MzIwOX0.52m2GgS1dqV_7896DgvPCI6Yr-yBjroobs7RLSEb-Jw';
 
-const missingConfig = !supabaseUrl || !supabaseAnonKey;
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || SUPABASE_ANON_KEY;
 
-if (missingConfig) {
-  console.warn(
-    'Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env.'
-  );
-}
-
-export const supabase = createClient(
-  supabaseUrl || 'https://placeholder.supabase.co',
-  supabaseAnonKey || 'placeholder-anon-key',
-  {
-    auth: {
-      persistSession: true,
-      autoRefreshToken: true,
-      detectSessionInUrl: true,
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
+  },
+  realtime: {
+    params: {
+      eventsPerSecond: 10,
     },
-    realtime: {
-      params: {
-        eventsPerSecond: 10,
-      },
-    },
-  }
-);
+  },
+});
 
-export const isSupabaseConfigured = () => !missingConfig;
+export const isSupabaseConfigured = () => true;
 
 export const requireSupabaseConfig = () => {
-  if (missingConfig) {
-    throw new Error('Configure VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no arquivo .env.');
-  }
+  // Always configured — fallback values ensure connectivity
 };
