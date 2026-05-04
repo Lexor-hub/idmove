@@ -3,9 +3,17 @@ import type { CompanyRow, DeliveryStatus, DriverStatus, ProfileRow } from '@/int
 import { buildRetryDeliveryPayload, getNextScheduledDate } from '@/lib/delivery-attempts';
 import { normalizeBrazilianDocument } from '@/lib/documents';
 import { normalizeRole } from '@/lib/roles';
-import { buildProfilePayload } from '@/lib/user-creation';
 
-export type ApiResponse<T> = { success: true; data: T } | { success: false; error: string };
+export type ApiResponse<T> = { success: boolean; data?: T; error?: string };
+
+export type ExtractedNfeData = {
+  numero_nfe: string | null;
+  cnpj_emitente: string | null;
+  cnpj_destinatario: string | null;
+  cnpj_transportadora: string | null;
+  endereco_destinatario: string | null;
+  nome_destinatario: string | null;
+};
 
 export type DriverLocationPayload = {
   driver_id: string | number;
@@ -15,6 +23,11 @@ export type DriverLocationPayload = {
   speed?: number;
   heading?: number;
   delivery_id?: string | number | null;
+};
+
+export type DriverTrackingPointPayload = DriverLocationPayload & {
+  session_id: string;
+  recorded_at?: string;
 };
 
 export type TrackingHistoryFilters = {
@@ -207,6 +220,9 @@ class ApiService {
         : [];
     const receipt = receipts[0];
     const receiptUrl = receipt?.file_url || publicUrl('receipts', receipt?.file_path);
+    const sourceDocUrl = raw.source_document_path
+      ? publicUrl('delivery-documents', raw.source_document_path)
+      : null;
 
     return {
       ...raw,
@@ -221,7 +237,9 @@ class ApiService {
       has_receipt: receipts.length > 0,
       receipt_id: receipt?.id || null,
       receipt_image_url: receiptUrl,
+      receipt_notes: receipt?.notes || null,
       image_url: receiptUrl,
+      source_document_url: sourceDocUrl,
       delivery_date: raw.delivered_at || raw.updated_at || raw.created_at,
       original_delivery_id: raw.original_delivery_id || null,
       attempt_number: Number(raw.attempt_number || 1),
@@ -365,72 +383,24 @@ class ApiService {
   async createUser(payload: Record<string, any>) {
     return this.run(async () => {
       const context = await this.getContext();
-      const currentSession = (await supabase.auth.getSession()).data.session;
       const role = normalizeRole(payload.user_type || payload.role);
       const companyId = payload.company_id || context.profile.company_id;
       const fullName = payload.full_name || payload.name || payload.username || payload.email;
       const document = normalizeBrazilianDocument(payload.cpf || payload.document);
 
-      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-        email: payload.email,
-        password: payload.password,
-        options: {
-          data: {
-            full_name: fullName,
-            role,
-          },
-        },
+      const { data, error } = await supabase.rpc('create_managed_user', {
+        p_email:      payload.email,
+        p_password:   payload.password,
+        p_full_name:  fullName,
+        p_role:       role,
+        p_company_id: companyId,
+        p_username:   payload.username || payload.email,
+        p_cpf:        document || null,
+        p_status:     payload.status || 'ATIVO',
       });
-      if (signUpError) throw signUpError;
-      if (!signUpData.user?.id) throw new Error('Falha ao criar usuário de autenticação.');
+      if (error) throw error;
 
-      if (currentSession) {
-        await supabase.auth.setSession({
-          access_token: currentSession.access_token,
-          refresh_token: currentSession.refresh_token,
-        });
-      }
-
-      const profilePayload = buildProfilePayload({
-        authUserId: signUpData.user.id,
-        companyId,
-        email: payload.email,
-        username: payload.username || payload.email,
-        fullName,
-        role,
-        document,
-        status: payload.status || 'ATIVO',
-        isActive: payload.is_active ?? true,
-      });
-
-      const { data: profile, error: profileError } = await supabase
-        .from('profiles')
-        .upsert(profilePayload, { onConflict: 'auth_user_id' })
-        .select()
-        .single();
-      if (profileError) throw profileError;
-
-      if (role === 'DRIVER') {
-        const { error: driverError } = await supabase.from('drivers').insert({
-          company_id: companyId,
-          profile_id: profile.id,
-          name: fullName,
-          cpf: document,
-          status: payload.status || 'ATIVO',
-        });
-        if (driverError) throw driverError;
-      }
-
-      if (role === 'CLIENT') {
-        const { error: clientError } = await supabase.from('clients').insert({
-          company_id: companyId,
-          profile_id: profile.id,
-          name: fullName,
-          email: payload.email,
-          document,
-        });
-        if (clientError) throw clientError;
-      }
+      const result = data as Record<string, any>;
 
       let userCompany = context.company;
       if (companyId && (!userCompany || userCompany.id !== companyId)) {
@@ -442,7 +412,24 @@ class ApiService {
         userCompany = fetchedCompany as CompanyRow | null;
       }
 
-      return this.profileToUser(profile as ProfileRow, userCompany);
+      return {
+        id: result.id,
+        user_id: result.auth_user_id || result.id,
+        username: result.username,
+        email: result.email,
+        full_name: result.full_name,
+        name: result.full_name,
+        role: result.role,
+        user_type: result.role,
+        cpf: document || undefined,
+        status: result.status,
+        is_active: result.is_active,
+        company_id: companyId || undefined,
+        company_name: userCompany?.name,
+        company_domain: userCompany?.domain || undefined,
+        driver_id: result.driver_id || undefined,
+        client_id: result.client_id || undefined,
+      };
     });
   }
 
@@ -453,6 +440,7 @@ class ApiService {
       const updatePayload: Record<string, any> = {
         email: payload.email,
         full_name: payload.full_name || payload.name,
+        username: payload.username,
         role: normalizedRole,
         cpf: document,
         status: payload.status,
@@ -485,8 +473,22 @@ class ApiService {
 
   async deleteUser(userId: string | number) {
     return this.run(async () => {
-      const { error } = await supabase.from('profiles').delete().eq('id', String(userId));
-      if (error) throw error;
+      const { data: profile, error: fetchError } = await supabase
+        .from('profiles')
+        .select('auth_user_id')
+        .eq('id', String(userId))
+        .single();
+      if (fetchError) throw fetchError;
+
+      if (profile?.auth_user_id) {
+        const { error: rpcError } = await supabase
+          .rpc('delete_auth_user', { target_auth_user_id: profile.auth_user_id });
+        if (rpcError) throw rpcError;
+      } else {
+        const { error } = await supabase.from('profiles').delete().eq('id', String(userId));
+        if (error) throw error;
+      }
+
       return { id: String(userId) };
     });
   }
@@ -590,7 +592,7 @@ class ApiService {
     return this.run(async () => {
       let query = supabase
         .from('deliveries')
-        .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,created_at)')
+        .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,notes,created_at)')
         .order('created_at', { ascending: false });
 
       const ctx = await this.getContext();
@@ -605,7 +607,7 @@ class ApiService {
       if (filters?.date_to) query = query.lte('scheduled_date', filters.date_to);
 
       if (filters?.client === 'current') {
-        if (ctx.clientId) query = query.eq('client_id', ctx.clientId);
+        if (ctx.profile.role !== 'CLIENT' && ctx.clientId) query = query.eq('client_id', ctx.clientId);
       }
 
       const { data, error } = await query;
@@ -618,7 +620,7 @@ class ApiService {
     return this.run(async () => {
       const { data, error } = await supabase
         .from('deliveries')
-        .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,created_at)')
+        .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,notes,created_at)')
         .eq('id', String(deliveryId))
         .single();
       if (error) throw error;
@@ -628,7 +630,9 @@ class ApiService {
 
   async createDelivery(payload: Record<string, any>) {
     return this.run(async () => {
-      const companyId = await this.companyId();
+      const context = await this.getContext();
+      const companyId = context.profile.company_id;
+      if (!companyId) throw new Error('Empresa nao identificada.');
       const structured = payload.structured || {};
       const summary = payload.summary || {};
       const nfData = structured.nf_data || {};
@@ -690,7 +694,10 @@ class ApiService {
         }
       }
 
-      const driverId = payload.driver_id || null;
+      const requestedDriverId = payload.driver_id && payload.driver_id !== 'none'
+        ? String(payload.driver_id)
+        : null;
+      const driverId = requestedDriverId || context.driverId || null;
       const { data, error } = await supabase
         .from('deliveries')
         .insert({
@@ -724,7 +731,7 @@ class ApiService {
       const activeSince = new Date(Date.now() - 15 * 60 * 1000).toISOString();
       let deliveriesQuery = supabase
         .from('deliveries')
-        .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,created_at)')
+        .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,notes,created_at)')
         .eq('scheduled_date', today)
         .order('created_at', { ascending: false });
       let driversQuery = supabase.from('drivers').select('id,current_status').in('current_status', ['online', 'active', 'idle']);
@@ -736,6 +743,7 @@ class ApiService {
       let positionsQuery = supabase
         .from('v_motoristas_posicao')
         .select('motorista_id,company_id,updated_at')
+        .eq('is_active', true)
         .gte('updated_at', activeSince);
 
       if (ctx.profile.role !== 'MASTER') {
@@ -831,7 +839,46 @@ class ApiService {
     });
   }
 
-  async upsertDriverPosition(driverId: string, latitude: number, longitude: number): Promise<void> {
+  async startDriverTracking(driverId: string | number, platform?: string) {
+    return this.run(async () => {
+      const { data, error } = await supabase.rpc('start_driver_tracking', {
+        p_motorista_id: String(driverId),
+        p_platform: platform || null,
+      });
+      if (error) throw error;
+      if (!data) throw new Error('Sessao de rastreamento nao criada.');
+      return { session_id: String(data) };
+    });
+  }
+
+  async recordDriverLocation(payload: DriverTrackingPointPayload): Promise<ApiResponse<void>> {
+    return this.run(async () => {
+      const { error } = await supabase.rpc('record_driver_location', {
+        p_session_id: payload.session_id,
+        p_motorista_id: String(payload.driver_id),
+        p_latitude: payload.latitude,
+        p_longitude: payload.longitude,
+        p_accuracy_m: payload.accuracy ?? null,
+        p_speed_kmh: payload.speed ?? null,
+        p_heading_deg: payload.heading ?? null,
+        p_recorded_at: payload.recorded_at || new Date().toISOString(),
+        p_delivery_id: payload.delivery_id ? String(payload.delivery_id) : null,
+      });
+      if (error) throw error;
+    });
+  }
+
+  async finishDriverTracking(driverId: string | number, sessionId: string): Promise<ApiResponse<void>> {
+    return this.run(async () => {
+      const { error } = await supabase.rpc('finish_driver_tracking', {
+        p_session_id: sessionId,
+        p_motorista_id: String(driverId),
+      });
+      if (error) throw error;
+    });
+  }
+
+  async upsertDriverPosition(driverId: string, latitude: number, longitude: number): Promise<ApiResponse<void>> {
     return this.run(async () => {
       const { error } = await supabase.rpc('upsert_driver_position', {
         p_motorista_id: driverId,
@@ -842,34 +889,42 @@ class ApiService {
     });
   }
 
-  async getCurrentLocations() {
+  async getActiveDriverLocations() {
     return this.run(async () => {
-      const { data, error } = await supabase
-        .from('tracking_points')
-        .select('*, drivers(name,current_status)')
-        .gte('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
-        .order('created_at', { ascending: false });
+      const ctx = await this.getContext();
+      let query = supabase
+        .from('v_motoristas_posicao')
+        .select('motorista_id,driver_name,company_id,session_id,is_active,latitude,longitude,accuracy_m,speed_kmh,heading_deg,recorded_at,updated_at')
+        .eq('is_active', true)
+        .order('updated_at', { ascending: false });
+
+      if (ctx.profile.role !== 'MASTER') {
+        query = query.eq('company_id', ctx.profile.company_id);
+      }
+
+      const { data, error } = await query;
       if (error) throw error;
 
-      const byDriver = new Map<string, any>();
-      (data || []).forEach((point: any) => {
-        if (!byDriver.has(point.driver_id)) byDriver.set(point.driver_id, point);
-      });
-
-      return Array.from(byDriver.values()).map((point: any) => ({
-        driver_id: point.driver_id,
-        driver_name: point.drivers?.name || 'Motorista',
+      return (data || []).map((point: any) => ({
+        driver_id: point.motorista_id,
+        session_id: point.session_id,
+        driver_name: point.driver_name || 'Motorista',
         latitude: point.latitude,
         longitude: point.longitude,
-        accuracy: point.accuracy || 0,
-        speed: point.speed || 0,
-        heading: point.heading || 0,
-        last_update: point.created_at,
-        status: point.drivers?.current_status === 'offline' ? 'inactive' : 'active',
-        activity_status: point.drivers?.current_status === 'idle' ? 'idle' : 'active',
-        current_delivery_id: point.delivery_id,
+        accuracy: point.accuracy_m || 0,
+        speed: point.speed_kmh || 0,
+        heading: point.heading_deg || 0,
+        last_update: point.updated_at,
+        recorded_at: point.recorded_at,
+        status: 'active',
+        activity_status: 'active',
+        current_delivery_id: null,
       }));
     });
+  }
+
+  async getCurrentLocations() {
+    return this.getActiveDriverLocations();
   }
 
   async getTrackingHistory(driverId: string | number, filters?: TrackingHistoryFilters) {
@@ -1033,6 +1088,8 @@ class ApiService {
         client_address: delivery.client_address || delivery.delivery_address || null,
         client_name: delivery.client_name || delivery.client_name_extracted || null,
         receipt_image_url: delivery.receipt_image_url,
+        receipt_notes: delivery.receipt_notes || null,
+        source_document_url: delivery.source_document_url || null,
         original_delivery_id: delivery.original_delivery_id || null,
         attempt_number: delivery.attempt_number || 1,
         rescheduled_from_occurrence_id: delivery.rescheduled_from_occurrence_id || null,
@@ -1185,6 +1242,37 @@ class ApiService {
       filename: file.name,
       message: 'OCR externo fora do MVP. Preencha ou confirme os dados manualmente.',
     }));
+  }
+
+  async extractNfeWithGemini(file: File): Promise<ApiResponse<ExtractedNfeData>> {
+    return this.run(async () => {
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve((reader.result as string).split(',')[1]);
+        reader.onerror = () => reject(new Error('Erro ao ler arquivo'));
+        reader.readAsDataURL(file);
+      });
+
+      const { data, error } = await supabase.functions.invoke('extract-nfe-gemini', {
+        body: { image_base64: base64, content_type: file.type },
+      });
+
+      if (error) {
+        let msg = 'Serviço de leitura indisponível no momento.';
+        try {
+          // FunctionsHttpError has a `context` Response object with the actual body
+          if (error.context && typeof error.context.json === 'function') {
+            const body = await error.context.json();
+            if (body?.error) msg = body.error;
+          }
+        } catch {
+          // fallback to generic message
+        }
+        throw new Error(msg);
+      }
+
+      return data as ExtractedNfeData;
+    });
   }
 
   async getSecureFile(url: string): Promise<string | null> {
@@ -1369,7 +1457,7 @@ class ApiService {
           updated_at: new Date().toISOString(),
         })
         .eq('id', String(deliveryId))
-        .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,created_at)')
+        .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,notes,created_at)')
         .single();
 
       if (error) throw error;
@@ -1405,7 +1493,7 @@ class ApiService {
           updated_at: new Date().toISOString(),
         })
         .eq('id', String(deliveryId))
-        .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,created_at)')
+        .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,notes,created_at)')
         .single();
 
       if (error) throw error;
@@ -1432,7 +1520,7 @@ class ApiService {
           loaded_at: new Date().toISOString(),
         })
         .eq('id', String(deliveryId))
-        .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,created_at)')
+        .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,notes,created_at)')
         .single();
 
       if (error) throw error;
@@ -1450,6 +1538,29 @@ class ApiService {
 
       if (error) throw error;
       return { success: true, updated: count || data?.length || 0 };
+    });
+  }
+
+  async deleteDelivery(deliveryId: string | number): Promise<ApiResponse<{ id: string }>> {
+    return this.run(async () => {
+      const companyId = await this.companyId();
+      // Only allow deleting deliveries that haven't been finalized
+      const { data: delivery, error: fetchError } = await supabase
+        .from('deliveries')
+        .select('id, status')
+        .eq('id', String(deliveryId))
+        .eq('company_id', companyId)
+        .single();
+      if (fetchError) throw fetchError;
+      if (!['PENDING', 'ASSIGNED', 'FAILED'].includes(delivery.status)) {
+        throw new Error('Não é possível excluir uma entrega em andamento ou já finalizada.');
+      }
+      // Remove receipts first (FK)
+      await supabase.from('delivery_receipts').delete().eq('delivery_id', String(deliveryId));
+      await supabase.from('delivery_events').delete().eq('delivery_id', String(deliveryId));
+      const { error } = await supabase.from('deliveries').delete().eq('id', String(deliveryId));
+      if (error) throw error;
+      return { id: String(deliveryId) };
     });
   }
 

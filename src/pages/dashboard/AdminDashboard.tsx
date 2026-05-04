@@ -34,6 +34,9 @@ interface DriverLoadStatus {
     nf_number: string;
     status: string;
     client_name: string;
+    receipt_image_url?: string | null;
+    receipt_notes?: string | null;
+    source_document_url?: string | null;
   }>;
 }
 
@@ -272,7 +275,7 @@ export const AdminDashboard = () => {
       {/* Main Content Grid */}
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Quick Actions */}
-        <Card>
+        <Card className="glass-card border-white/5">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Users className="h-5 w-5" />
@@ -328,7 +331,7 @@ export const AdminDashboard = () => {
         </Card>
 
         {/* Recent Activity */}
-        <Card>
+        <Card className="glass-card border-white/5">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <FileText className="h-5 w-5" />
@@ -369,7 +372,7 @@ export const AdminDashboard = () => {
       </div>
 
       {/* Carregamento do Dia */}
-      <Card>
+      <Card className="glass-card border-white/5">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Truck className="h-5 w-5" />
@@ -425,7 +428,7 @@ export const AdminDashboard = () => {
       </Card>
 
       {/* Tabela de Ocorrências do Dia */}
-      <Card>
+      <Card className="glass-card border-white/5">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <AlertTriangle className="h-5 w-5" />
@@ -490,7 +493,7 @@ export const AdminDashboard = () => {
       </Card>
 
       {/* System Status */}
-      <Card>
+      <Card className="glass-card border-white/5">
         <CardHeader>
           <CardTitle>Status do Sistema</CardTitle>
         </CardHeader>
@@ -546,41 +549,65 @@ export const AdminDashboard = () => {
             <DialogHeader>
               <DialogTitle>Entregas - {selectedDriverModal.name}</DialogTitle>
             </DialogHeader>
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>NF</TableHead>
-                    <TableHead>Cliente</TableHead>
-                    <TableHead>Status</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {selectedDriverModal.deliveries.map((delivery) => {
-                    const statusMap: Record<string, { label: string; bg: string; text: string }> = {
-                      PENDING: { label: 'Pendente', bg: 'bg-yellow-100', text: 'text-yellow-800' },
-                      ASSIGNED: { label: 'Atribuída', bg: 'bg-blue-100', text: 'text-blue-800' },
-                      IN_TRANSIT: { label: 'Em Rota', bg: 'bg-orange-100', text: 'text-orange-800' },
-                      DELIVERED: { label: 'Entregue', bg: 'bg-green-100', text: 'text-green-800' },
-                      FAILED: { label: 'Falha', bg: 'bg-red-100', text: 'text-red-800' },
-                      CANCELLED: { label: 'Cancelada', bg: 'bg-gray-100', text: 'text-gray-800' },
-                    };
-                    const statusInfo = statusMap[delivery.status] || statusMap.PENDING;
+            <div className="space-y-3">
+              {selectedDriverModal.deliveries.map((delivery) => {
+                const statusMap: Record<string, { label: string; bg: string; text: string }> = {
+                  PENDING: { label: 'Pendente', bg: 'bg-yellow-100', text: 'text-yellow-800' },
+                  ASSIGNED: { label: 'Atribuída', bg: 'bg-blue-100', text: 'text-blue-800' },
+                  IN_TRANSIT: { label: 'Em Rota', bg: 'bg-orange-100', text: 'text-orange-800' },
+                  DELIVERED: { label: 'Entregue', bg: 'bg-green-100', text: 'text-green-800' },
+                  FAILED: { label: 'Falha', bg: 'bg-red-100', text: 'text-red-800' },
+                  CANCELLED: { label: 'Cancelada', bg: 'bg-gray-100', text: 'text-gray-800' },
+                };
+                const statusInfo = statusMap[delivery.status] || statusMap.PENDING;
 
-                    return (
-                      <TableRow key={delivery.id}>
-                        <TableCell className="font-medium">{delivery.nf_number}</TableCell>
-                        <TableCell>{delivery.client_name}</TableCell>
-                        <TableCell>
-                          <Badge className={`${statusInfo.bg} ${statusInfo.text}`}>
-                            {statusInfo.label}
-                          </Badge>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
+                return (
+                  <div key={delivery.id} className="border rounded-lg p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <p className="font-medium text-sm">NF {delivery.nf_number}</p>
+                        <p className="text-xs text-muted-foreground">{delivery.client_name}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {delivery.source_document_url && (
+                          <a
+                            href={delivery.source_document_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:text-blue-800"
+                            title="Ver NF-e original"
+                          >
+                            <FileText className="h-4 w-4" />
+                          </a>
+                        )}
+                        <Badge className={`${statusInfo.bg} ${statusInfo.text}`}>
+                          {statusInfo.label}
+                        </Badge>
+                      </div>
+                    </div>
+
+                    {delivery.receipt_image_url && (
+                      <div className="flex items-start gap-3">
+                        <a href={delivery.receipt_image_url} target="_blank" rel="noopener noreferrer">
+                          <img
+                            src={delivery.receipt_image_url}
+                            alt="Canhoto"
+                            className="h-16 w-16 object-cover rounded border hover:opacity-80 transition-opacity"
+                          />
+                        </a>
+                        <div className="flex-1">
+                          <p className="text-xs font-medium text-green-700 flex items-center gap-1">
+                            <CheckCircle className="h-3 w-3" /> Canhoto enviado
+                          </p>
+                          {delivery.receipt_notes && (
+                            <p className="text-xs text-gray-600 mt-1 bg-gray-50 rounded p-1">{delivery.receipt_notes}</p>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </DialogContent>
         </Dialog>

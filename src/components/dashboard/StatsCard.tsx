@@ -48,7 +48,7 @@ export const StatsCard: React.FC<StatsCardProps> = ({
   };
 
   return (
-    <Card className={`transition-all duration-200 hover:shadow-card ${getVariantStyles()}`}>
+    <Card className={`glass-card transition-all duration-300 ${getVariantStyles()}`}>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <CardTitle className="text-sm font-medium text-muted-foreground">
           {title}

@@ -123,7 +123,7 @@ export const MasterDashboard = () => {
       {/* Main Content Grid */}
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Quick Actions */}
-        <Card>
+        <Card className="glass-card border-white/5">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Shield className="h-5 w-5" />
@@ -163,7 +163,7 @@ export const MasterDashboard = () => {
         </Card>
 
         {/* Recent Companies */}
-        <Card>
+        <Card className="glass-card border-white/5">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Globe className="h-5 w-5" />
@@ -201,7 +201,7 @@ export const MasterDashboard = () => {
       </div>
 
       {/* System Overview */}
-      <Card>
+      <Card className="glass-card border-white/5">
         <CardHeader>
           <CardTitle>Visão Geral do Sistema</CardTitle>
         </CardHeader>
@@ -236,7 +236,7 @@ export const MasterDashboard = () => {
 
       {/* System Features */}
       <div className="grid gap-6 md:grid-cols-2">
-        <Card>
+        <Card className="glass-card border-white/5">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Shield className="h-5 w-5" />
@@ -265,7 +265,7 @@ export const MasterDashboard = () => {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="glass-card border-white/5">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Globe className="h-5 w-5" />

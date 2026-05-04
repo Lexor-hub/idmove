@@ -23,3 +23,23 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Environment files (never commit secrets)
+.env
+.env.*
+!.env.example
+
+# Supabase CLI temp files
+supabase/.temp/
+
+# Android native build (managed separately)
+android/
+
+# Test/debug scripts
+test_user_creation_payload.cjs
+
+# Setup documentation
+PLAY_STORE_SETUP.md
+QUICK_REFERENCE.md
+SETUP_COMPLETO.md
+SUMMARY_SETUP.txt

@@ -11,6 +11,7 @@ const DEFAULT_CENTER: LatLngTuple = [-23.55052, -46.633308];
 
 interface DriverLocation {
   driver_id: string;
+  session_id?: string | null;
   driver_name: string;
   latitude: number;
   longitude: number;
@@ -18,6 +19,8 @@ interface DriverLocation {
   status: 'active' | 'inactive';
   movementStatus: MovementStatus;
   speed: number;
+  accuracy: number;
+  heading: number;
 }
 
 const getInitials = (name: string) => {
@@ -126,7 +129,8 @@ const Tracking = () => {
         setIsLoading(true);
         const { data, error } = await supabase
           .from('v_motoristas_posicao')
-          .select('motorista_id, driver_name, latitude, longitude, updated_at');
+          .select('motorista_id, driver_name, session_id, is_active, latitude, longitude, accuracy_m, speed_kmh, heading_deg, recorded_at, updated_at')
+          .eq('is_active', true);
 
         if (!isMounted || error || !data) {
           if (error) setError('Erro ao carregar posições');
@@ -139,13 +143,16 @@ const Tracking = () => {
             .filter((r) => Number.isFinite(r.latitude) && Number.isFinite(r.longitude))
             .map((r) => ({
               driver_id: r.motorista_id,
+              session_id: r.session_id,
               driver_name: r.driver_name,
               latitude: r.latitude,
               longitude: r.longitude,
               last_update: r.updated_at,
               status: 'active' as const,
-              movementStatus: computeMovementStatus({ speed: undefined, last_update: r.updated_at }, now),
-              speed: 0,
+              movementStatus: computeMovementStatus({ speed: r.speed_kmh, last_update: r.updated_at }, now),
+              speed: Number(r.speed_kmh || 0),
+              accuracy: Number(r.accuracy_m || 0),
+              heading: Number(r.heading_deg || 0),
             }))
         );
         setError(null);
@@ -172,15 +179,22 @@ const Tracking = () => {
 
           console.debug('[Tracking] Realtime event recebido:', payload.eventType, motoristaId);
 
+          const isActive = (payload.new as Record<string, unknown>)?.is_active;
+          if (payload.eventType === 'DELETE' || isActive === false) {
+            setLocations((prev) => prev.filter((l) => l.driver_id !== motoristaId));
+            return;
+          }
+
           // Re-fetch desta linha na view (converte geography → lat/lon)
           const { data: row, error: rowError } = await supabase
             .from('v_motoristas_posicao')
-            .select('motorista_id, driver_name, latitude, longitude, updated_at')
+            .select('motorista_id, driver_name, session_id, is_active, latitude, longitude, accuracy_m, speed_kmh, heading_deg, recorded_at, updated_at')
             .eq('motorista_id', motoristaId)
+            .eq('is_active', true)
             .single();
 
           if (rowError) {
-            console.warn('[Tracking] Erro ao buscar linha atualizada:', rowError);
+            setLocations((prev) => prev.filter((l) => l.driver_id !== motoristaId));
             return;
           }
           if (!row || !isMounted) return;
@@ -191,13 +205,16 @@ const Tracking = () => {
             const existing = prev.findIndex((l) => l.driver_id === motoristaId);
             const updated = {
               driver_id: row.motorista_id,
+              session_id: row.session_id,
               driver_name: row.driver_name,
               latitude: row.latitude,
               longitude: row.longitude,
               last_update: row.updated_at,
               status: 'active' as const,
-              movementStatus: computeMovementStatus({ speed: undefined, last_update: row.updated_at }, now),
-              speed: 0,
+              movementStatus: computeMovementStatus({ speed: row.speed_kmh, last_update: row.updated_at }, now),
+              speed: Number(row.speed_kmh || 0),
+              accuracy: Number(row.accuracy_m || 0),
+              heading: Number(row.heading_deg || 0),
             };
             if (existing >= 0) {
               const next = [...prev];
@@ -303,6 +320,12 @@ const Tracking = () => {
                       <p className="text-xs text-muted-foreground flex items-center gap-1">
                         <Clock className="h-3 w-3" />
                         Última atualização: {new Date(driver.last_update).toLocaleTimeString('pt-BR')}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Precisão: ±{Math.round(driver.accuracy)}m
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Velocidade: {Math.round(driver.speed)} km/h | Direção: {Math.round(driver.heading)}°
                       </p>
                     </div>
                   </Popup>

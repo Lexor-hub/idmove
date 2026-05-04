@@ -245,15 +245,15 @@ export const Users = () => {
         loadUsers();
       } else {
         toast({
-          title: "Erro",
-          description: (response as any).message || "Erro ao criar usuário",
+          title: "Erro ao criar usuário",
+          description: (response as any).error || "Erro desconhecido",
           variant: "destructive",
         });
       }
     } catch (error) {
       toast({
-        title: "Erro",
-        description: "Erro ao criar usuário",
+        title: "Erro ao criar usuário",
+        description: error instanceof Error ? error.message : "Erro desconhecido",
         variant: "destructive",
       });
     }
@@ -339,15 +339,15 @@ export const Users = () => {
         loadUsers();
       } else {
         toast({
-          title: "Erro",
-          description: (response as any).message || "Erro ao atualizar usuário",
+          title: "Erro ao atualizar usuário",
+          description: (response as any).error || "Erro desconhecido",
           variant: "destructive",
         });
       }
     } catch (error) {
       toast({
-        title: "Erro",
-        description: "Erro ao atualizar usuário",
+        title: "Erro ao atualizar usuário",
+        description: error instanceof Error ? error.message : "Erro desconhecido",
         variant: "destructive",
       });
     }
@@ -368,18 +368,18 @@ export const Users = () => {
           title: "Sucesso",
           description: "Usuário excluído permanentemente do sistema!",
         });
-        loadUsers(); // Recarregar a lista de usuários
+        loadUsers();
       } else {
         toast({
-          title: "Erro",
-          description: (response as any).message || "Erro ao excluir usuário",
+          title: "Erro ao excluir usuário",
+          description: (response as any).error || "Erro desconhecido",
           variant: "destructive",
         });
       }
     } catch (error) {
       toast({
-        title: "Erro",
-        description: "Erro ao excluir usuário",
+        title: "Erro ao excluir usuário",
+        description: error instanceof Error ? error.message : "Erro desconhecido",
         variant: "destructive",
       });
     }
@@ -651,7 +651,7 @@ export const Users = () => {
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-2">
                         {/* 🔒 PROTEÇÃO: Ocultar botões de edição/exclusão para usuários MASTER quando o usuário logado não é MASTER */}
-                        {!((user.role === 'MASTER' || user.user_type === 'MASTER') && authUser?.user_type !== 'MASTER') && (
+                        {!((user.role === 'MASTER' || user.user_type === 'MASTER') && authUser?.role !== 'MASTER' && authUser?.user_type !== 'MASTER') && (
                           <>
                             <Button
                               variant="ghost"
@@ -685,7 +685,7 @@ export const Users = () => {
                           </>
                         )}
                         {/* Mostrar indicador visual quando as ações estão bloqueadas */}
-                        {(user.role === 'MASTER' || user.user_type === 'MASTER') && authUser?.user_type !== 'MASTER' && (
+                        {(user.role === 'MASTER' || user.user_type === 'MASTER') && authUser?.role !== 'MASTER' && authUser?.user_type !== 'MASTER' && (
                           <span className="text-xs text-gray-500 italic px-2 py-1 bg-gray-100 rounded">
                             Protegido
                           </span>
@@ -764,6 +764,18 @@ export const Users = () => {
                   Este documento identifica o cliente nas entregas e no rastreamento.
                 </p>
               )}
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="edit-status">Status</Label>
+              <Select value={formData.status} onValueChange={(value) => setFormData(prev => ({ ...prev, status: value }))}>
+                <SelectTrigger id="edit-status">
+                  <SelectValue placeholder="Selecione o status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ATIVO">Ativo</SelectItem>
+                  <SelectItem value="INATIVO">Inativo</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
           <DialogFooter>

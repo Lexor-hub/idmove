@@ -35,6 +35,8 @@ interface ClientDelivery {
   driver?: string;
   address?: string;
   receipt_image_url?: string | null;
+  receipt_notes?: string | null;
+  source_document_url?: string | null;
   attempt_number?: number;
   latest_occurrence?: {
     type?: string;
@@ -158,6 +160,8 @@ export const ClientDashboard = () => {
             driver: d.driver || null,
             address: d.delivery_address || d.client_address || null,
             receipt_image_url: d.receipt_image_url || null,
+            receipt_notes: d.receipt_notes || null,
+            source_document_url: d.source_document_url || null,
             attempt_number: d.attempt_number || 1,
             latest_occurrence: d.latest_occurrence || null,
           };
@@ -366,22 +370,63 @@ export const ClientDashboard = () => {
                           
                           {/* Actions for delivered items */}
                           {delivery.statusPtBR === 'Entregue' && delivery.receipt_image_url && (
-                            <div className="mt-3">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="w-full gap-1"
-                                onClick={() => handleViewReceipt(delivery.receipt_image_url!)}
-                              >
-                                <ImageIcon className="h-4 w-4" />
-                                Ver Canhoto Assinado
-                              </Button>
+                            <div className="mt-3 space-y-2">
+                              <div className="flex items-start gap-3">
+                                <button onClick={() => handleViewReceipt(delivery.receipt_image_url!)} className="shrink-0">
+                                  <img
+                                    src={delivery.receipt_image_url}
+                                    alt="Canhoto"
+                                    className="h-16 w-16 object-cover rounded border hover:opacity-80 transition-opacity"
+                                  />
+                                </button>
+                                <div className="flex-1">
+                                  <p className="text-xs font-medium text-green-700 flex items-center gap-1">
+                                    <CheckCircle className="h-3 w-3" /> Canhoto disponível
+                                  </p>
+                                  {delivery.receipt_notes && (
+                                    <p className="text-xs text-gray-600 mt-1">{delivery.receipt_notes}</p>
+                                  )}
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="mt-1 gap-1 h-7 text-xs"
+                                    onClick={() => handleViewReceipt(delivery.receipt_image_url!)}
+                                  >
+                                    <ImageIcon className="h-3 w-3" />
+                                    Ampliar
+                                  </Button>
+                                </div>
+                              </div>
+                              {delivery.source_document_url && (
+                                <a
+                                  href={delivery.source_document_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex items-center gap-1 text-xs text-blue-600 hover:underline"
+                                >
+                                  <FileText className="h-3 w-3" />
+                                  Ver NF-e original
+                                </a>
+                              )}
                             </div>
                           )}
                           {delivery.statusPtBR === 'Entregue' && !delivery.receipt_image_url && (
-                            <div className="mt-3 flex items-center gap-2 text-sm text-green-600">
-                              <CheckCircle className="h-4 w-4" />
-                              <span>Entrega concluída</span>
+                            <div className="mt-3 space-y-1">
+                              <div className="flex items-center gap-2 text-sm text-green-600">
+                                <CheckCircle className="h-4 w-4" />
+                                <span>Entrega concluída</span>
+                              </div>
+                              {delivery.source_document_url && (
+                                <a
+                                  href={delivery.source_document_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex items-center gap-1 text-xs text-blue-600 hover:underline"
+                                >
+                                  <FileText className="h-3 w-3" />
+                                  Ver NF-e original
+                                </a>
+                              )}
                             </div>
                           )}
                         </CardContent>

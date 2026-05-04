@@ -70,34 +70,40 @@ const Login: React.FC = () => {
 
   if (authStep === 'company') {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
-        <div className="max-w-md w-full space-y-8">
-          <div>
-            <div className="mx-auto h-12 w-12 flex items-center justify-center rounded-full bg-blue-100">
-              <Building2 className="h-6 w-6 text-blue-600" />
+      <div className="min-h-screen flex items-center justify-center bg-background text-foreground relative overflow-hidden py-12 px-4 sm:px-6 lg:px-8">
+        {/* Animated Background Elements */}
+        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-primary/10 rounded-full blur-[120px] animate-pulse-primary pointer-events-none" />
+        <div className="absolute bottom-1/4 right-1/4 w-[500px] h-[500px] bg-secondary/20 rounded-full blur-[150px] pointer-events-none" />
+        
+        <div className="max-w-md w-full space-y-8 z-10 relative animate-fade-in">
+          <div className="text-center">
+            <div className="mx-auto h-32 w-32 relative flex items-center justify-center mb-6 group">
+              <div className="absolute inset-0 bg-primary/20 blur-3xl rounded-full animate-pulse-primary" />
+              <div className="absolute inset-0 bg-gradient-to-tr from-primary/30 to-transparent rounded-full opacity-50 group-hover:opacity-100 transition-opacity duration-500 blur-sm" />
+              <img src="/logo_final.png" alt="ID MOVE Premium Logo" className="w-full h-full object-contain relative z-10 drop-shadow-[0_0_20px_rgba(242,139,4,0.7)] transform group-hover:scale-105 transition-transform duration-500" />
             </div>
-            <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
+            <h2 className="mt-6 text-3xl font-extrabold tracking-tight text-foreground">
               Selecione sua empresa
             </h2>
-            <p className="mt-2 text-center text-sm text-gray-600">
+            <p className="mt-2 text-sm text-muted-foreground">
               Escolha a empresa para a qual você trabalha
             </p>
           </div>
 
-          <Card>
+          <Card className="glass-card border-white/10 shadow-elevated">
             <CardContent className="pt-6">
               {companiesLoading ? (
                 <div className="flex items-center justify-center py-8">
-                  <Loader2 className="h-6 w-6 animate-spin text-blue-600" />
-                  <span className="ml-2 text-gray-600">Carregando empresas...</span>
+                  <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                  <span className="ml-3 text-muted-foreground font-medium">Carregando empresas...</span>
                 </div>
               ) : error ? (
                 <div className="text-center py-8">
-                  <p className="text-red-600">{error}</p>
+                  <p className="text-destructive font-medium mb-4">{error}</p>
                   <Button 
                     onClick={loadCompanies} 
                     variant="outline" 
-                    className="mt-4"
+                    className="glass-input hover:bg-primary/20 hover:text-primary transition-colors"
                   >
                     Tentar novamente
                   </Button>
@@ -108,14 +114,14 @@ const Login: React.FC = () => {
                     <div
                       key={company.id}
                       onClick={() => handleCompanySelect(company.id)}
-                      className="p-4 border rounded-lg cursor-pointer hover:bg-gray-50 transition-colors"
+                      className="p-4 border border-white/10 rounded-xl cursor-pointer bg-background/30 hover:bg-primary/10 hover:border-primary/50 transition-all duration-300 group"
                     >
                       <div className="flex items-center justify-between">
                         <div>
-                          <h3 className="font-medium text-gray-900">{company.name}</h3>
-                          <p className="text-sm text-gray-500">{company.domain}</p>
+                          <h3 className="font-semibold text-foreground group-hover:text-primary transition-colors">{company.name}</h3>
+                          <p className="text-sm text-muted-foreground mt-1">{company.domain}</p>
                         </div>
-                        <Button size="sm" variant="outline">
+                        <Button size="sm" variant="outline" className="opacity-0 group-hover:opacity-100 transition-opacity border-primary/50 text-primary hover:bg-primary hover:text-primary-foreground">
                           Selecionar
                         </Button>
                       </div>
@@ -131,71 +137,77 @@ const Login: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-md w-full space-y-8">
-        <div>
-          <div className="mx-auto h-12 w-12 flex items-center justify-center rounded-full bg-blue-100">
-            <User className="h-6 w-6 text-blue-600" />
+    <div className="min-h-screen flex items-center justify-center bg-background text-foreground relative overflow-hidden py-12 px-4 sm:px-6 lg:px-8">
+      {/* Animated Background Elements */}
+      <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-primary/10 rounded-full blur-[120px] animate-pulse-primary pointer-events-none" />
+      <div className="absolute bottom-1/4 right-1/4 w-[500px] h-[500px] bg-secondary/20 rounded-full blur-[150px] pointer-events-none" />
+      
+      <div className="max-w-md w-full space-y-8 z-10 relative animate-fade-in">
+        <div className="text-center">
+          <div className="mx-auto h-32 w-32 relative flex items-center justify-center mb-6 group">
+            <div className="absolute inset-0 bg-primary/20 blur-3xl rounded-full animate-pulse-primary" />
+            <div className="absolute inset-0 bg-gradient-to-tr from-primary/30 to-transparent rounded-full opacity-50 group-hover:opacity-100 transition-opacity duration-500 blur-sm" />
+            <img src="/logo_final.png" alt="ID MOVE Premium Logo" className="w-full h-full object-contain relative z-10 drop-shadow-[0_0_20px_rgba(242,139,4,0.7)] transform group-hover:scale-105 transition-transform duration-500" />
           </div>
-          <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
-            Entrar na sua conta
+          <h2 className="mt-6 text-3xl font-extrabold tracking-tight text-foreground">
+            Entrar no ID MOVE
           </h2>
-          <p className="mt-2 text-center text-sm text-gray-600">
-            Digite suas credenciais para acessar o sistema
+          <p className="mt-2 text-sm text-muted-foreground">
+            Acesse a sua conta premium
           </p>
         </div>
 
-        <Card>
-          <CardContent className="pt-6">
-            <form onSubmit={handleLogin} className="space-y-4">
-              <div>
-                <Label htmlFor="username">Usuário</Label>
-                <div className="relative">
-                  <User className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+        <Card className="glass-card border-white/10 shadow-elevated">
+          <CardContent className="pt-8 pb-6 px-6">
+            <form onSubmit={handleLogin} className="space-y-5">
+              <div className="space-y-1.5">
+                <Label htmlFor="username" className="text-muted-foreground text-xs uppercase tracking-wider font-semibold">Usuário</Label>
+                <div className="relative group">
+                  <User className="absolute left-3 top-3 h-5 w-5 text-muted-foreground group-focus-within:text-primary transition-colors" />
                   <Input
                     id="username"
                     type="text"
                     value={credentials.username}
                     onChange={(e) => setCredentials({ ...credentials, username: e.target.value })}
-                    className="pl-10"
+                    className="pl-10 glass-input h-12"
                     placeholder="Digite seu usuário"
                     required
                   />
                 </div>
               </div>
 
-              <div>
-                <Label htmlFor="password">Senha</Label>
-                <div className="relative">
-                  <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+              <div className="space-y-1.5">
+                <Label htmlFor="password" className="text-muted-foreground text-xs uppercase tracking-wider font-semibold">Senha</Label>
+                <div className="relative group">
+                  <Lock className="absolute left-3 top-3 h-5 w-5 text-muted-foreground group-focus-within:text-primary transition-colors" />
                   <Input
                     id="password"
                     type="password"
                     value={credentials.password}
                     onChange={(e) => setCredentials({ ...credentials, password: e.target.value })}
-                    className="pl-10"
-                    placeholder="Digite sua senha"
+                    className="pl-10 glass-input h-12"
+                    placeholder="••••••••"
                     required
                   />
                 </div>
               </div>
 
               {error && (
-                <div className="text-red-600 text-sm text-center">{error}</div>
+                <div className="text-destructive text-sm text-center font-medium bg-destructive/10 py-2 rounded-md border border-destructive/20">{error}</div>
               )}
 
               <Button
                 type="submit"
-                className="w-full"
+                className="w-full h-12 bg-gradient-primary hover:shadow-glow text-primary-foreground font-semibold text-base tracking-wide transition-all duration-300 mt-2"
                 disabled={loading}
               >
                 {loading ? (
                   <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Entrando...
+                    <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                    Autenticando...
                   </>
                 ) : (
-                  'Entrar'
+                  'Acessar Sistema'
                 )}
               </Button>
             </form>

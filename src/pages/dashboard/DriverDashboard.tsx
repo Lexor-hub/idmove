@@ -16,14 +16,19 @@ import {
     Plus,
     Route,
     Upload,
-    Eye
+    Eye,
+    Trash2,
+    FileText,
+    Loader2,
+    ChevronRight,
 } from 'lucide-react';
 import { apiService } from '@/services/api';
 import { processImageOCR, type NFeExtractedData } from '@/services/ocrService';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
-import { useDriverLocation } from '@/hooks/useDriverLocation';
+import { useDriverLocation, type DriverTrackingPosition } from '@/hooks/useDriverLocation';
 import { SimpleDeliveryForm } from '@/components/delivery/SimpleDeliveryForm';
+import { Capacitor } from '@capacitor/core';
 
 // CORRIGIDO: A interface agora inclui 'createdAt' e 'driverId'
 interface Delivery {
@@ -38,6 +43,7 @@ interface Delivery {
     createdAt?: string;
     driverId?: string;
     receiptImageUrl?: string; // Adicionado para guardar a URL da imagem
+    originalApiStatus?: string;
 }
 
 interface ApiDelivery {
@@ -58,9 +64,6 @@ interface ApiDelivery {
     image_url?: string; // Adicionado para compatibilidade
     driver_id?: number;
 }
-
-const GPS_ACCURACY_THRESHOLD_METERS = 50;
-const GPS_ACCURACY_GRACE_PERIOD_MS = 15000;
 
 type WakeLockSentinelLike = EventTarget & {
     released: boolean;
@@ -126,6 +129,15 @@ export const DriverDashboard = () => {
     const [editOcrClient, setEditOcrClient] = useState('');
     const [editOcrNf, setEditOcrNf] = useState('');
 
+    // 2-step finalize: step 1=photo+OCR, step 2=notes
+    const [finalizeStep, setFinalizeStep] = useState<1 | 2>(1);
+    const [finalizeNotes, setFinalizeNotes] = useState('');
+
+    // Delete delivery state
+    const [showDeleteModal, setShowDeleteModal] = useState(false);
+    const [deliveryToDelete, setDeliveryToDelete] = useState<Delivery | null>(null);
+    const [deletingDelivery, setDeletingDelivery] = useState(false);
+
     const [hasLocationConsent, setHasLocationConsent] = useState<boolean>(() => {
         if (typeof window === 'undefined') return false;
         return localStorage.getItem('driver_location_consent') === 'true';
@@ -133,21 +145,13 @@ export const DriverDashboard = () => {
     const [showConsentDialog, setShowConsentDialog] = useState(false);
     const [locationActive, setLocationActive] = useState(false);
     const [requestingLocation, setRequestingLocation] = useState(false);
-    const locationWatchId = useRef<number | null>(null);
+    const [trackingSessionId, setTrackingSessionId] = useState<string | null>(null);
     const wakeLockRef = useRef<WakeLockSentinelLike | null>(null);
     const [screenAwake, setScreenAwake] = useState(false);
     const [wakeLockUnavailable, setWakeLockUnavailable] = useState(false);
-    const [lastKnownPosition, setLastKnownPosition] = useState<GeolocationPosition | null>(null);
-    const trackingStartTimestampRef = useRef<number | null>(null);
-    const awaitingAccurateFixRef = useRef(false);
-    const accuracyToastShownRef = useRef(false);
+    const [lastKnownPosition, setLastKnownPosition] = useState<DriverTrackingPosition | null>(null);
 
     const driverIdForTracking = user?.driver_id || user?.id || '';
-    useDriverLocation({
-        driverId: driverIdForTracking,
-        active: locationActive,
-        intervalSeconds: 15,
-    });
 
     const releaseWakeLock = useCallback(async () => {
         const sentinel = wakeLockRef.current;
@@ -193,26 +197,32 @@ export const DriverDashboard = () => {
     }, []);
 
     const stopLocationTracking = useCallback(() => {
-        if (typeof navigator !== 'undefined' && navigator.geolocation && locationWatchId.current !== null) {
-            navigator.geolocation.clearWatch(locationWatchId.current);
-            locationWatchId.current = null;
-        }
         setLocationActive(false);
         setRequestingLocation(false);
         setLastKnownPosition(null);
-        trackingStartTimestampRef.current = null;
-        awaitingAccurateFixRef.current = false;
-        accuracyToastShownRef.current = false;
+        setTrackingSessionId(null);
     }, []);
 
-    const sendLocationUpdate = useCallback(async (position?: GeolocationPosition) => {
+    const sendLocationUpdate = useCallback(async (position?: DriverTrackingPosition) => {
         const targetPosition = position ?? lastKnownPosition;
         const driverId = resolveDriverId();
 
-        if (!targetPosition || !driverId || !routeStarted) {
+        if (!targetPosition || !driverId || !routeStarted || !trackingSessionId) {
             return;
         }
 
+        await apiService.recordDriverLocation({
+            session_id: trackingSessionId,
+            driver_id: driverId,
+            latitude: targetPosition.latitude,
+            longitude: targetPosition.longitude,
+            accuracy: targetPosition.accuracy ?? undefined,
+            speed: targetPosition.speed ?? undefined,
+            heading: targetPosition.heading ?? undefined,
+            recorded_at: new Date(targetPosition.recordedAt).toISOString(),
+        });
+
+        /*
         const { latitude, longitude, accuracy, speed, heading } = targetPosition.coords;
         const numericAccuracy = typeof accuracy === 'number' ? accuracy : null;
         const skipAccuracyFilter = Boolean(position);
@@ -268,7 +278,8 @@ export const DriverDashboard = () => {
                 heading: typeof heading === 'number' ? heading : undefined,
             });
         } catch (error) {}
-    }, [lastKnownPosition, routeStarted, resolveDriverId, toast]);
+        */
+    }, [lastKnownPosition, routeStarted, resolveDriverId, trackingSessionId]);
 
     const updateDriverStatus = useCallback(async (status: 'online' | 'offline' | 'idle') => {
         const driverId = resolveDriverId();
@@ -276,10 +287,42 @@ export const DriverDashboard = () => {
         try {
             await apiService.updateDriverStatus(driverId, status);
         } catch (error) {
+            console.debug('[DriverDashboard] Nao foi possivel atualizar status do motorista:', error);
         } 
-    }, [user]);
+    }, [resolveDriverId]);
 
-    const startLocationTracking = useCallback(() => {
+    const startLocationTracking = useCallback(async () => {
+        const driverId = resolveDriverId();
+        if (!driverId) {
+            toast({
+                title: 'Motorista nÃ£o identificado',
+                description: 'NÃ£o foi possÃ­vel iniciar o rastreamento para este usuÃ¡rio.',
+                variant: 'destructive'
+            });
+            return false;
+        }
+
+        setRequestingLocation(true);
+        setLocationActive(false);
+        setLastKnownPosition(null);
+
+        const response = await apiService.startDriverTracking(driverId, Capacitor.getPlatform());
+        if (!response.success) {
+            setRequestingLocation(false);
+            toast({
+                title: 'Erro ao iniciar rastreamento',
+                description: response.error,
+                variant: 'destructive'
+            });
+            return false;
+        }
+
+        setTrackingSessionId(response.data.session_id);
+        setLocationActive(true);
+        updateDriverStatus('online');
+        return true;
+
+        /*
         if (typeof navigator === 'undefined' || !navigator.geolocation) {
             toast({
                 title: 'Geolocalizaçãoo indisponível',
@@ -336,14 +379,67 @@ export const DriverDashboard = () => {
 
         locationWatchId.current = watchId;
         return true;
-    }, [stopLocationTracking, toast, sendLocationUpdate]);
+        */
+    }, [resolveDriverId, toast, updateDriverStatus]);
 
     // Novo useEffect para enviar a localização sempre que `lastKnownPosition` mudar.
-    useEffect(() => {
-        if (routeStarted && lastKnownPosition) {
-            sendLocationUpdate(lastKnownPosition);
+    const handleTrackingPosition = useCallback((position: DriverTrackingPosition) => {
+        setLastKnownPosition(position);
+        setRequestingLocation(false);
+    }, []);
+
+    const handleTrackingError = useCallback(async (error: GeolocationPositionError | Error) => {
+        const driverId = resolveDriverId();
+        const sessionId = trackingSessionId;
+
+        setRequestingLocation(false);
+        setLocationActive(false);
+        setTrackingSessionId(null);
+
+        if (driverId && sessionId) {
+            await apiService.finishDriverTracking(driverId, sessionId);
+            await updateDriverStatus('offline');
         }
-    }, [lastKnownPosition, routeStarted, sendLocationUpdate]);
+
+        let description = 'NÃ£o foi possÃ­vel ativar a localizaÃ§Ã£o.';
+        if ('code' in error) {
+            if (error.code === error.PERMISSION_DENIED) {
+                description = 'Permita o acesso Ã  localizaÃ§Ã£o para acompanhar o trajeto da rota.';
+            } else if (error.code === error.POSITION_UNAVAILABLE) {
+                description = 'NÃ£o foi possÃ­vel obter sua localizaÃ§Ã£o atual. Tente novamente em instantes.';
+            } else if (error.code === error.TIMEOUT) {
+                description = 'Tempo excedido ao tentar obter sua localizaÃ§Ã£o. Tente novamente.';
+            }
+        } else if (error.message) {
+            description = error.message;
+        }
+
+        toast({
+            title: 'Erro de localizaÃ§Ã£o',
+            description,
+            variant: 'destructive'
+        });
+    }, [resolveDriverId, toast, trackingSessionId, updateDriverStatus]);
+
+    const driverTracking = useDriverLocation({
+        driverId: String(driverIdForTracking || ''),
+        sessionId: trackingSessionId,
+        active: routeStarted && locationActive && Boolean(trackingSessionId),
+        onPosition: handleTrackingPosition,
+        onError: handleTrackingError,
+    });
+
+    useEffect(() => {
+        if (locationActive) {
+            setRequestingLocation(driverTracking.isRequesting);
+        }
+    }, [driverTracking.isRequesting, locationActive]);
+
+    useEffect(() => {
+        if (driverTracking.lastPosition) {
+            setLastKnownPosition(driverTracking.lastPosition);
+        }
+    }, [driverTracking.lastPosition]);
 
     // DriverDashboard.tsx (Adicione este handler)
     const handleViewDetails = useCallback(async (delivery: Delivery) => {
@@ -400,17 +496,14 @@ export const DriverDashboard = () => {
                         address: item.delivery_address || 'Endereço Indefinido',
                         volume: item.delivery_volume ?? 1,
                         value: Number(item.merchandise_value || 0),
-                        status: item.has_receipt
+                        status: item.has_receipt || item.status === 'DELIVERED'
                             ? 'REALIZADA'
-                            : item.status === 'DELIVERED'
-                            ? 'REALIZADA'
-                            : item.status === 'IN_TRANSIT'
+                            : item.status === 'IN_TRANSIT' || item.status === 'ASSIGNED'
                             ? 'EM_ANDAMENTO'
-                            : item.status === 'ASSIGNED'
-                            ? 'REALIZADA'
                             : item.status === 'PENDING'
                             ? 'PENDENTE'
                             : 'PROBLEMA',
+                        originalApiStatus: item.status,
                         hasReceipt: Boolean(item.has_receipt),
                         createdAt: item.created_at,
                         receiptImageUrl: item.receipt_image_url || item.image_url || null,
@@ -507,15 +600,19 @@ export const DriverDashboard = () => {
         });
     };
 
-    const executeRouteStart = () => {
+    const executeRouteStart = async () => {
         if (routeStarted) return;
         setRouteStarted(true);
-        updateDriverStatus('online');
+        const trackingStarted = await startLocationTracking();
+        if (!trackingStarted) {
+            setRouteStarted(false);
+            await updateDriverStatus('offline');
+            return;
+        }
         toast({
             title: 'Rota iniciada!',
             description: 'Boa viagem! Lembre-se de fotografar os comprovantes.'
         });
-        startLocationTracking();
     };
 
     const handleStartRoute = () => {
@@ -523,28 +620,42 @@ export const DriverDashboard = () => {
             setShowConsentDialog(true);
             return;
         }
-        executeRouteStart();
+        void executeRouteStart();
     };
 
-    const handleFinishRoute = () => {
+    const handleFinishRoute = async () => {
         if (!routeStarted) {
             return;
         }
+
+        const driverId = resolveDriverId();
+        const sessionId = trackingSessionId;
+        setLocationActive(false);
+
         if (lastKnownPosition) {
-            sendLocationUpdate(lastKnownPosition);
-        } else {
-            sendLocationUpdate();
+            await sendLocationUpdate(lastKnownPosition);
+        }
+
+        if (driverId && sessionId) {
+            const response = await apiService.finishDriverTracking(driverId, sessionId);
+            if (!response.success) {
+                toast({
+                    title: 'Erro ao finalizar rastreamento',
+                    description: response.error,
+                    variant: 'destructive'
+                });
+            }
         }
         setRouteStarted(false);
         stopLocationTracking();
-        updateDriverStatus('offline');
+        await updateDriverStatus('offline');
         toast({
             title: 'Rota finalizada!',
             description: 'Parabéns! Sua rota foi concluída com sucesso.'
         });
     };
 
-    const handleEnableLocation = () => {
+    const handleEnableLocation = async () => {
         if (!routeStarted) {
             toast({
                 title: 'Rota não iniciada',
@@ -558,7 +669,7 @@ export const DriverDashboard = () => {
             return;
         }
 
-        const trackingStarted = startLocationTracking();
+        const trackingStarted = await startLocationTracking();
         if (trackingStarted) {
             updateDriverStatus('online');
         }
@@ -568,16 +679,9 @@ const handleDisableLocation = () => {
         if (!locationActive && !requestingLocation) {
             return;
         }
-        if (lastKnownPosition) {
-            sendLocationUpdate(lastKnownPosition);
-        } else {
-            sendLocationUpdate();
-        }
-        stopLocationTracking();
-        updateDriverStatus('idle');
         toast({
-            title: 'Localização desativada',
-            description: 'Você pode reativar a qualquer momento enquanto a rota estiver em andamento.'
+            title: 'Finalize a rota para desligar',
+            description: 'O rastreamento permanece ativo durante a rota e desliga no botão Finalizar Rota.'
         });
     };
 
@@ -587,7 +691,7 @@ const handleDisableLocation = () => {
             localStorage.setItem('driver_location_consent', 'true');
         }
         setShowConsentDialog(false);
-        executeRouteStart();
+        void executeRouteStart();
     };
 
     const handleConsentDecline = () => {
@@ -626,9 +730,9 @@ const handleDisableLocation = () => {
 
     const startRoute = useCallback(async () => {
         try {
-            // Coleta IDs das entregas carregadas (REALIZADA na UI = ASSIGNED na API)
+            // Coleta IDs das entregas carregadas (ASSIGNED na API)
             const assignedDeliveryIds = deliveries
-                .filter(d => d.status === 'REALIZADA') // Entregas confirmadas como carregadas
+                .filter(d => d.originalApiStatus === 'ASSIGNED')
                 .map(d => d.id);
 
             if (assignedDeliveryIds.length === 0) {
@@ -648,8 +752,11 @@ const handleDisableLocation = () => {
                 });
                 setPhase('ON_ROUTE');
                 setRouteStarted(true);
-                updateDriverStatus('online');
-                startLocationTracking();
+                const trackingStarted = await startLocationTracking();
+                if (!trackingStarted) {
+                    setRouteStarted(false);
+                    return;
+                }
             } else {
                 throw new Error((response as any).error || 'Erro ao iniciar rota');
             }
@@ -701,7 +808,13 @@ const handleDisableLocation = () => {
         event.target.value = '';
     };
 
-    // Chamado quando o motorista confirma a foto
+    // Advance from photo step to notes step
+    const handlePhotoStepNext = () => {
+        if (!capturedPhoto) return;
+        setFinalizeStep(2);
+    };
+
+    // Chamado quando o motorista confirma foto + notas e finaliza
     const handleConfirmPhoto = async () => {
         if (!capturedPhoto || !selectedDelivery) return;
 
@@ -713,7 +826,6 @@ const handleDisableLocation = () => {
 
         setIsUploading(true);
         try {
-            // Process OCR on the canhoto photo
             let ocrData: Record<string, any> | undefined;
             if (ocrResult) {
                 ocrData = {
@@ -725,22 +837,24 @@ const handleDisableLocation = () => {
                 };
             }
 
+            // Build notes: driver notes + OCR summary
+            const notesParts: string[] = [];
+            if (finalizeNotes.trim()) notesParts.push(finalizeNotes.trim());
+            if (ocrData) notesParts.push(`OCR: CNPJ=${editOcrCnpj} NF=${editOcrNf} Cliente=${editOcrClient}`);
+            const combinedNotes = notesParts.join(' | ') || undefined;
+
             const response = await apiService.attachReceipt(
                 selectedDelivery.id,
                 driverId,
                 capturedPhoto.file,
-                { notes: ocrData ? `OCR: CNPJ=${editOcrCnpj} NF=${editOcrNf} Cliente=${editOcrClient}` : undefined }
+                { notes: combinedNotes }
             );
             if (response.success) {
-                // If we have OCR data and a receipt was created, update it
                 if (ocrData && response.data?.id) {
                     await apiService.processReceiptOCR(response.data.id, ocrData);
                 }
 
-                toast({
-                    title: "Sucesso!",
-                    description: "Comprovante enviado e entrega finalizada.",
-                });
+                toast({ title: "Entrega finalizada!", description: "Canhoto enviado. O cliente já pode visualizar na plataforma." });
                 setDeliveries(prevDeliveries =>
                     prevDeliveries.map(d =>
                         d.id === selectedDelivery.id
@@ -754,14 +868,16 @@ const handleDisableLocation = () => {
                 setEditOcrCnpj('');
                 setEditOcrClient('');
                 setEditOcrNf('');
+                setFinalizeStep(1);
+                setFinalizeNotes('');
             } else {
                 throw new Error((response as any).message || 'Erro desconhecido');
             }
         } catch (error: any) {
-            toast({ 
-                title: "Erro ao enviar", 
-                description: error.message || "Não foi possível enviar o comprovante. Verifique sua conexão.", 
-                variant: "destructive" 
+            toast({
+                title: "Erro ao enviar",
+                description: error.message || "Não foi possível enviar o comprovante. Verifique sua conexão.",
+                variant: "destructive"
             });
         } finally {
             setIsUploading(false);
@@ -837,8 +953,8 @@ const handleDisableLocation = () => {
             const response = await apiService.createOccurrence(occurrenceDelivery.id, {
                 type: occurrenceType,
                 description: occurrenceDescription.trim(),
-                latitude: lastKnownPosition?.coords.latitude,
-                longitude: lastKnownPosition?.coords.longitude,
+                latitude: lastKnownPosition?.latitude,
+                longitude: lastKnownPosition?.longitude,
                 photo: occurrencePhoto?.file,
             });
 
@@ -923,6 +1039,31 @@ const handleDisableLocation = () => {
         }
     }, [showReceiptModal]);
 
+    const handleOpenDelete = (delivery: Delivery) => {
+        setDeliveryToDelete(delivery);
+        setShowDeleteModal(true);
+    };
+
+    const handleConfirmDelete = async () => {
+        if (!deliveryToDelete) return;
+        setDeletingDelivery(true);
+        try {
+            const response = await apiService.deleteDelivery(deliveryToDelete.id);
+            if (response.success) {
+                setDeliveries(prev => prev.filter(d => d.id !== deliveryToDelete.id));
+                toast({ title: 'Entrega excluída', description: `NF ${deliveryToDelete.nfNumber} removida.` });
+                setShowDeleteModal(false);
+                setDeliveryToDelete(null);
+            } else {
+                toast({ title: 'Erro ao excluir', description: (response as any).error, variant: 'destructive' });
+            }
+        } catch (err: any) {
+            toast({ title: 'Erro', description: err.message || 'Não foi possível excluir.', variant: 'destructive' });
+        } finally {
+            setDeletingDelivery(false);
+        }
+    };
+
     return (
         <main className="container mx-auto px-4 py-6 space-y-6 max-w-md lg:max-w-4xl">
             {/* Input de arquivo oculto para a câmera */}
@@ -1006,7 +1147,7 @@ const handleDisableLocation = () => {
                             </div>
                             <div className="text-center">
                                 <div className="text-2xl font-bold text-green-600">
-                                    {deliveries.filter(d => d.status === 'REALIZADA').length}
+                                    {deliveries.filter(d => d.originalApiStatus === 'ASSIGNED').length}
                                 </div>
                                 <p className="text-xs text-gray-600">NFs Carregadas</p>
                             </div>
@@ -1080,7 +1221,7 @@ const handleDisableLocation = () => {
                                 ? 'Aguardando confirmação da localização...'
                                 : locationActive
                                     ? lastKnownPosition
-                                        ? `Última atualização às ${new Date(lastKnownPosition.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })} (lat ${lastKnownPosition.coords.latitude.toFixed(5)}, lon ${lastKnownPosition.coords.longitude.toFixed(5)})`
+                                        ? `Última atualização às ${new Date(lastKnownPosition.recordedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })} (lat ${lastKnownPosition.latitude.toFixed(5)}, lon ${lastKnownPosition.longitude.toFixed(5)}, precisão ±${Math.round(lastKnownPosition.accuracy ?? 0)}m)`
                                         : 'Localização ativa. Aguardando primeira atualização...'
                                     : 'Localização desligada no momento.'}
                         </div>
@@ -1120,14 +1261,24 @@ const handleDisableLocation = () => {
                                                     <MapPin className="h-4 w-4 text-gray-500" />
                                                     <span className="text-gray-500">{delivery.address}</span>
                                                 </div>
-                                                <Button
-                                                    size="sm"
-                                                    onClick={() => confirmDeliveryLoading(delivery.id)}
-                                                    className="w-full"
-                                                >
-                                                    <CheckCircle className="mr-2 h-4 w-4" />
-                                                    Confirmar Carga
-                                                </Button>
+                                                <div className="flex gap-2">
+                                                    <Button
+                                                        size="sm"
+                                                        onClick={() => confirmDeliveryLoading(delivery.id)}
+                                                        className="flex-1"
+                                                    >
+                                                        <CheckCircle className="mr-2 h-4 w-4" />
+                                                        Confirmar Carga
+                                                    </Button>
+                                                    <Button
+                                                        size="sm"
+                                                        variant="outline"
+                                                        onClick={() => handleOpenDelete(delivery)}
+                                                        className="text-red-600 border-red-200 hover:bg-red-50"
+                                                    >
+                                                        <Trash2 className="h-4 w-4" />
+                                                    </Button>
+                                                </div>
                                             </CardContent>
                                         </Card>
                                     ))}
@@ -1141,18 +1292,18 @@ const handleDisableLocation = () => {
                         <CardHeader>
                             <CardTitle className="flex items-center gap-2">
                                 <CheckCircle className="h-5 w-5 text-green-600" />
-                                NFs Carregadas ({deliveries.filter(d => d.status === 'REALIZADA').length})
+                                NFs Carregadas ({deliveries.filter(d => d.originalApiStatus === 'ASSIGNED').length})
                             </CardTitle>
                         </CardHeader>
                         <CardContent>
-                            {deliveries.filter(d => d.status === 'REALIZADA').length === 0 ? (
+                            {deliveries.filter(d => d.originalApiStatus === 'ASSIGNED').length === 0 ? (
                                 <div className="text-center py-8">
                                     <Package className="h-12 w-12 mx-auto text-gray-400 mb-4" />
                                     <p className="text-gray-500">Nenhuma NF carregada ainda</p>
                                 </div>
                             ) : (
                                 <div className="space-y-3">
-                                    {deliveries.filter(d => d.status === 'REALIZADA').map((delivery) => (
+                                    {deliveries.filter(d => d.originalApiStatus === 'ASSIGNED').map((delivery) => (
                                         <Card key={delivery.id} className="border-l-4 border-l-green-500 bg-green-50">
                                             <CardContent className="pt-3">
                                                 <div className="flex items-start justify-between">
@@ -1174,10 +1325,10 @@ const handleDisableLocation = () => {
                     <Button
                         onClick={startRoute}
                         className="bg-green-600 hover:bg-green-700 w-full h-14 text-lg font-semibold"
-                        disabled={deliveries.filter(d => d.status === 'REALIZADA').length === 0}
+                        disabled={deliveries.filter(d => d.originalApiStatus === 'ASSIGNED').length === 0}
                     >
                         <Route className="mr-2 h-5 w-5" />
-                        Iniciar Rota ({deliveries.filter(d => d.status === 'REALIZADA').length} NFs)
+                        Iniciar Rota ({deliveries.filter(d => d.originalApiStatus === 'ASSIGNED').length} NFs)
                     </Button>
                 </>
             ) : (
@@ -1223,30 +1374,40 @@ const handleDisableLocation = () => {
                                         </div>
 
                                         {/* Bloco de AÇÕES (Botões) */}
-                                        <div className="mt-4 flex gap-2 items-center justify-between">
-
-                                            {/* BOTÃO VER DETALHES */}
-                                            <Button
-                                                size="sm"
-                                                variant="outline"
-                                                onClick={() => handleViewDetails(delivery)} // <<-- Handler para abrir o modal
-                                            >
-                                                Ver Detalhes
-                                            </Button>
-
-                                            {/* Renderização condicional do botão Fotografar/Finalizada */}
-                                            {delivery.status !== 'REALIZADA' && !delivery.hasReceipt && (
-                                                <Button size="sm" onClick={() => handleTakePhotoClick(delivery)}>
-                                                    <Camera className="mr-2 h-4 w-4" />
-                                                    Fotografar Canhoto
+                                        <div className="mt-4 space-y-2">
+                                            <div className="flex gap-2 flex-wrap">
+                                                <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    onClick={() => handleViewDetails(delivery)}
+                                                >
+                                                    Ver Detalhes
                                                 </Button>
-                                            )}
-                                            {delivery.status !== 'REALIZADA' && !delivery.hasReceipt && (
-                                                <Button size="sm" variant="destructive" onClick={() => handleOpenOccurrence(delivery)}>
-                                                    <AlertTriangle className="mr-2 h-4 w-4" />
-                                                    Reportar Problema
-                                                </Button>
-                                            )}
+
+                                                {!delivery.hasReceipt && delivery.originalApiStatus !== 'DELIVERED' && delivery.originalApiStatus !== 'FAILED' && (
+                                                    <Button size="sm" onClick={() => handleTakePhotoClick(delivery)}>
+                                                        <Camera className="mr-1 h-4 w-4" />
+                                                        Finalizar Entrega
+                                                    </Button>
+                                                )}
+                                                {!delivery.hasReceipt && delivery.originalApiStatus !== 'DELIVERED' && delivery.originalApiStatus !== 'FAILED' && (
+                                                    <Button size="sm" variant="destructive" onClick={() => handleOpenOccurrence(delivery)}>
+                                                        <AlertTriangle className="mr-1 h-4 w-4" />
+                                                        Ocorrência
+                                                    </Button>
+                                                )}
+                                                {!delivery.hasReceipt && delivery.originalApiStatus !== 'DELIVERED' && delivery.originalApiStatus !== 'FAILED' && (
+                                                    <Button
+                                                        size="sm"
+                                                        variant="outline"
+                                                        onClick={() => handleOpenDelete(delivery)}
+                                                        className="text-red-600 border-red-200 hover:bg-red-50"
+                                                    >
+                                                        <Trash2 className="h-4 w-4" />
+                                                    </Button>
+                                                )}
+                                            </div>
+
                                             {delivery.hasReceipt && delivery.receiptImageUrl && (
                                                 <div className="flex items-center gap-2 text-green-600">
                                                     <CheckCircle className="h-4 w-4" />
@@ -1398,14 +1559,32 @@ const handleDisableLocation = () => {
                                         {/* Seção do Canhoto Anexado */}
                                         {deliveryDetails.receipt_image_url && (
                                             <div className="p-3 bg-gray-50 rounded-md border">
+                                                <h3 className="font-semibold text-gray-800 border-b pb-2 mb-2">Canhoto</h3>
                                                 <a href={deliveryDetails.receipt_image_url} target="_blank" rel="noopener noreferrer">
                                                     <img src={deliveryDetails.receipt_image_url} alt="Prévia do canhoto" className="rounded-md w-full h-auto object-contain cursor-pointer hover:opacity-80 transition-opacity" />
                                                 </a>
-                                                <p className="text-xs text-center text-gray-500 mt-2">Clique na imagem para ampliar</p>
+                                                <p className="text-xs text-center text-gray-500 mt-2">Clique para ampliar</p>
+                                                {deliveryDetails.receipt_notes && (
+                                                    <p className="text-xs text-gray-600 mt-2 bg-white border rounded p-2">{deliveryDetails.receipt_notes}</p>
+                                                )}
                                             </div>
                                         )}
 
-                                        {/* Aqui você pode adicionar mais campos como created_at, etc. */}
+                                        {/* NF-e Source Document */}
+                                        {deliveryDetails.source_document_url && (
+                                            <div className="p-3 bg-gray-50 rounded-md border">
+                                                <h3 className="font-semibold text-gray-800 border-b pb-2 mb-2">Documento NF-e</h3>
+                                                <a
+                                                    href={deliveryDetails.source_document_url}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    className="flex items-center gap-2 text-blue-600 hover:underline text-sm"
+                                                >
+                                                    <FileText className="h-4 w-4" />
+                                                    Ver NF-e original
+                                                </a>
+                                            </div>
+                                        )}
                                         
                                     </div>
                                 )}
@@ -1595,89 +1774,139 @@ const handleDisableLocation = () => {
                 </DialogContent>
             </Dialog>
 
-            {/* Modal de Confirmação da Foto com OCR */}
-            <Dialog open={showPhotoConfirmModal} onOpenChange={setShowPhotoConfirmModal}>
+            {/* Modal de Confirmação da Foto + Notas (2 passos) */}
+            <Dialog open={showPhotoConfirmModal} onOpenChange={(open) => {
+                if (!open) { setFinalizeStep(1); setFinalizeNotes(''); setOcrResult(null); setEditOcrCnpj(''); setEditOcrClient(''); setEditOcrNf(''); setCapturedPhoto(null); }
+                setShowPhotoConfirmModal(open);
+            }}>
                 <DialogContent className="max-h-[90vh] overflow-y-auto">
                     <DialogHeader>
-                        <DialogTitle>Confirmar Canhoto — NF {selectedDelivery?.nfNumber}</DialogTitle>
+                        <DialogTitle>
+                            {finalizeStep === 1
+                                ? `Passo 1/2 — Canhoto NF ${selectedDelivery?.nfNumber}`
+                                : `Passo 2/2 — Notas da Entrega`}
+                        </DialogTitle>
                         <DialogDescription>
-                            Foto do canhoto assinado. Você pode processar OCR para identificar os dados.
+                            {finalizeStep === 1
+                                ? 'Verifique a foto e identifique os dados via OCR.'
+                                : 'Adicione observações (opcional) e confirme.'}
                         </DialogDescription>
                     </DialogHeader>
-                    {capturedPhoto && (
-                        <img src={capturedPhoto.dataUrl} alt="Prévia do canhoto" className="rounded-md max-h-60 w-full object-contain" />
+
+                    {/* PASSO 1: Foto + OCR */}
+                    {finalizeStep === 1 && (
+                        <div className="space-y-3">
+                            {capturedPhoto && (
+                                <img src={capturedPhoto.dataUrl} alt="Prévia do canhoto" className="rounded-md max-h-60 w-full object-contain" />
+                            )}
+
+                            {!ocrResult && !ocrProcessing && (
+                                <Button variant="outline" size="sm" onClick={handleOcrOnPhoto} disabled={!capturedPhoto} className="gap-1 w-full">
+                                    <Eye className="h-4 w-4" />
+                                    Identificar dados via OCR
+                                </Button>
+                            )}
+
+                            {ocrProcessing && (
+                                <div className="space-y-2 p-3 bg-blue-50 rounded-lg">
+                                    <div className="flex items-center gap-2">
+                                        <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+                                        <span className="text-xs font-medium text-blue-800">{ocrStatus}</span>
+                                    </div>
+                                    <div className="w-full bg-blue-200 rounded-full h-1.5">
+                                        <div className="bg-blue-600 h-1.5 rounded-full transition-all duration-300" style={{ width: `${ocrProgress}%` }} />
+                                    </div>
+                                </div>
+                            )}
+
+                            {ocrResult && (
+                                <div className="space-y-3 p-3 bg-gray-50 rounded-lg border">
+                                    <p className="text-xs font-medium text-gray-700">Dados identificados (editáveis):</p>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <div className="space-y-1">
+                                            <label className="text-xs text-gray-500">CNPJ</label>
+                                            <input value={editOcrCnpj} onChange={(e) => setEditOcrCnpj(e.target.value)} className="w-full text-sm border rounded px-2 py-1" placeholder="00.000.000/0000-00" />
+                                        </div>
+                                        <div className="space-y-1">
+                                            <label className="text-xs text-gray-500">Nº NF-e</label>
+                                            <input value={editOcrNf} onChange={(e) => setEditOcrNf(e.target.value)} className="w-full text-sm border rounded px-2 py-1" placeholder="12345" />
+                                        </div>
+                                        <div className="col-span-2 space-y-1">
+                                            <label className="text-xs text-gray-500">Cliente</label>
+                                            <input value={editOcrClient} onChange={(e) => setEditOcrClient(e.target.value)} className="w-full text-sm border rounded px-2 py-1" placeholder="Nome do cliente" />
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            <DialogFooter className="grid grid-cols-2 gap-2 pt-2">
+                                <Button variant="outline" onClick={() => { setShowPhotoConfirmModal(false); }} disabled={isUploading}>
+                                    Tirar Outra
+                                </Button>
+                                <Button onClick={handlePhotoStepNext} disabled={!capturedPhoto || ocrProcessing}>
+                                    Próximo
+                                    <ChevronRight className="ml-1 h-4 w-4" />
+                                </Button>
+                            </DialogFooter>
+                        </div>
                     )}
 
-                    {/* OCR section */}
-                    {!ocrResult && !ocrProcessing && (
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={handleOcrOnPhoto}
-                            disabled={!capturedPhoto}
-                            className="gap-1"
-                        >
-                            <Eye className="h-4 w-4" />
-                            Identificar dados via OCR
-                        </Button>
-                    )}
+                    {/* PASSO 2: Notas */}
+                    {finalizeStep === 2 && (
+                        <div className="space-y-4">
+                            {capturedPhoto && (
+                                <div className="flex items-center gap-2 p-2 bg-green-50 rounded border border-green-200">
+                                    <CheckCircle className="h-4 w-4 text-green-600 shrink-0" />
+                                    <span className="text-xs text-green-700">Foto do canhoto pronta para envio.</span>
+                                </div>
+                            )}
 
-                    {ocrProcessing && (
-                        <div className="space-y-2 p-3 bg-blue-50 rounded-lg">
-                            <div className="flex items-center gap-2">
-                                <div className="h-4 w-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-                                <span className="text-xs font-medium text-blue-800">{ocrStatus}</span>
-                            </div>
-                            <div className="w-full bg-blue-200 rounded-full h-1.5">
-                                <div
-                                    className="bg-blue-600 h-1.5 rounded-full transition-all duration-300"
-                                    style={{ width: `${ocrProgress}%` }}
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium">Observações (opcional)</label>
+                                <Textarea
+                                    value={finalizeNotes}
+                                    onChange={(e) => setFinalizeNotes(e.target.value)}
+                                    placeholder="Ex: destinatário assinou, produto conferido, entregue ao porteiro..."
+                                    rows={4}
                                 />
                             </div>
+
+                            <DialogFooter className="grid grid-cols-2 gap-2">
+                                <Button variant="outline" onClick={() => setFinalizeStep(1)} disabled={isUploading}>
+                                    Voltar
+                                </Button>
+                                <Button onClick={handleConfirmPhoto} disabled={isUploading}>
+                                    {isUploading ? (
+                                        <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Enviando...</>
+                                    ) : (
+                                        <><CheckCircle className="mr-2 h-4 w-4" />Confirmar Entrega</>
+                                    )}
+                                </Button>
+                            </DialogFooter>
                         </div>
                     )}
+                </DialogContent>
+            </Dialog>
 
-                    {ocrResult && (
-                        <div className="space-y-3 p-3 bg-gray-50 rounded-lg border">
-                            <p className="text-xs font-medium text-gray-700">Dados identificados (editáveis):</p>
-                            <div className="grid grid-cols-2 gap-2">
-                                <div className="space-y-1">
-                                    <label className="text-xs text-gray-500">CNPJ</label>
-                                    <input
-                                        value={editOcrCnpj}
-                                        onChange={(e) => setEditOcrCnpj(e.target.value)}
-                                        className="w-full text-sm border rounded px-2 py-1"
-                                        placeholder="00.000.000/0000-00"
-                                    />
-                                </div>
-                                <div className="space-y-1">
-                                    <label className="text-xs text-gray-500">Nº NF-e</label>
-                                    <input
-                                        value={editOcrNf}
-                                        onChange={(e) => setEditOcrNf(e.target.value)}
-                                        className="w-full text-sm border rounded px-2 py-1"
-                                        placeholder="12345"
-                                    />
-                                </div>
-                                <div className="col-span-2 space-y-1">
-                                    <label className="text-xs text-gray-500">Cliente</label>
-                                    <input
-                                        value={editOcrClient}
-                                        onChange={(e) => setEditOcrClient(e.target.value)}
-                                        className="w-full text-sm border rounded px-2 py-1"
-                                        placeholder="Nome do cliente"
-                                    />
-                                </div>
-                            </div>
-                        </div>
-                    )}
-
+            {/* Modal de confirmação de exclusão */}
+            <Dialog open={showDeleteModal} onOpenChange={setShowDeleteModal}>
+                <DialogContent className="sm:max-w-sm">
+                    <DialogHeader>
+                        <DialogTitle>Excluir entrega</DialogTitle>
+                        <DialogDescription>
+                            Tem certeza que deseja excluir a NF {deliveryToDelete?.nfNumber} — {deliveryToDelete?.client}? Esta ação não pode ser desfeita.
+                        </DialogDescription>
+                    </DialogHeader>
                     <DialogFooter className="grid grid-cols-2 gap-2">
-                        <Button variant="outline" onClick={() => { setShowPhotoConfirmModal(false); setCapturedPhoto(null); setOcrResult(null); }} disabled={isUploading}>
-                            Tirar Outra
+                        <Button variant="outline" onClick={() => setShowDeleteModal(false)} disabled={deletingDelivery}>
+                            Cancelar
                         </Button>
-                        <Button onClick={handleConfirmPhoto} disabled={isUploading}>
-                            {isUploading ? 'Enviando...' : 'Confirmar e Finalizar'}
+                        <Button variant="destructive" onClick={handleConfirmDelete} disabled={deletingDelivery}>
+                            {deletingDelivery ? (
+                                <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Excluindo...</>
+                            ) : (
+                                <><Trash2 className="mr-2 h-4 w-4" />Excluir</>
+                            )}
                         </Button>
                     </DialogFooter>
                 </DialogContent>

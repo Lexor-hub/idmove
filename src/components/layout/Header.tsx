@@ -128,19 +128,20 @@ export const Header = () => {
   const breadcrumbs = getBreadcrumbs();
 
   return (
-    <header className="bg-gradient-primary shadow-card border-b border-border">
+    <header className="bg-background/80 backdrop-blur-xl shadow-elevated border-b border-white/5 sticky top-0 z-50 transition-all duration-300">
       <div className="flex items-center justify-between px-4 md:px-6 py-4">
         {/* Logo e Navegação */}
         <div className="flex items-center gap-4">
           {/* Logo */}
-          <div className="flex items-center gap-3">
-            <div className="bg-white/20 p-2 rounded-lg">
-              <Truck className="h-6 w-6 text-white" />
+          <div className="flex items-center gap-3 group cursor-pointer" onClick={() => navigate('/dashboard')}>
+            <div className="relative flex items-center justify-center p-1 group-hover:scale-105 transition-transform duration-500">
+              <div className="absolute inset-0 bg-primary/20 blur-xl rounded-full group-hover:bg-primary/40 transition-colors duration-500" />
+              <img src="/logo_final.png" alt="ID MOVE Premium Logo" className="h-12 w-auto object-contain relative z-10 drop-shadow-[0_0_8px_rgba(242,139,4,0.6)]" />
             </div>
             <div className="hidden sm:block">
-              <h1 className="text-xl font-bold text-white">ID MOVE</h1>
-              <p className="text-primary-light text-sm">
-                {company ? company.name : 'Sistema de Gestão de Entregas'}
+              <h1 className="text-xl font-extrabold tracking-tight text-foreground drop-shadow-sm">ID <span className="text-primary text-glow">MOVE</span></h1>
+              <p className="text-muted-foreground text-xs font-medium uppercase tracking-wider">
+                {company ? company.name : 'Sistema Premium'}
               </p>
             </div>
           </div>
@@ -168,14 +169,14 @@ export const Header = () => {
           {/* Breadcrumbs Mobile */}
           <div className="lg:hidden">
             <Breadcrumb>
-              <BreadcrumbList className="text-white text-sm">
+              <BreadcrumbList className="text-muted-foreground text-sm">
                 {breadcrumbs.slice(-2).map((crumb, index) => (
                   <div key={crumb.href} className="flex items-center">
-                    {index > 0 && <BreadcrumbSeparator className="text-white/60" />}
+                    {index > 0 && <BreadcrumbSeparator className="text-muted-foreground/60" />}
                     <BreadcrumbItem>
                       <BreadcrumbLink 
                         href={crumb.href}
-                        className="text-white/80 hover:text-white"
+                        className="text-muted-foreground hover:text-primary transition-colors"
                       >
                         {crumb.label}
                       </BreadcrumbLink>
@@ -188,12 +189,12 @@ export const Header = () => {
 
           {/* User Info */}
           <div className="text-right hidden sm:block">
-            <p className="text-white font-medium">{user?.name}</p>
-            <p className={`text-sm ${getRoleColor(user?.role || '')}`}>
+            <p className="text-foreground font-semibold">{user?.name}</p>
+            <p className={`text-xs font-medium tracking-wide uppercase ${getRoleColor(user?.role || '')}`}>
               {getRoleDisplay(user?.role || '')}
             </p>
             {company && (
-              <p className="text-white/70 text-xs">{company.domain}</p>
+              <p className="text-muted-foreground text-xs">{company.domain}</p>
             )}
           </div>
 
@@ -201,7 +202,7 @@ export const Header = () => {
           <Button
             variant="ghost"
             size="icon"
-            className="lg:hidden text-white min-h-[44px] min-w-[44px]"
+            className="lg:hidden text-foreground min-h-[44px] min-w-[44px] hover:bg-white/5"
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
           >
             <Menu className="h-6 w-6" />
@@ -210,9 +211,9 @@ export const Header = () => {
           {/* User Dropdown */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" className="relative h-10 w-10 rounded-full">
-                <Avatar className="h-10 w-10 border-2 border-white/20">
-                  <AvatarFallback className="bg-white/20 text-white font-medium">
+              <Button variant="ghost" className="relative h-10 w-10 rounded-full border border-primary/20 hover:border-primary/50 transition-colors bg-background/50">
+                <Avatar className="h-10 w-10">
+                  <AvatarFallback className="bg-primary/20 text-primary font-bold">
                     {user?.name?.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}
                   </AvatarFallback>
                 </Avatar>
@@ -249,19 +250,19 @@ export const Header = () => {
       {/* Breadcrumbs Desktop */}
       <div className="hidden lg:block px-6 pb-4">
         <Breadcrumb>
-          <BreadcrumbList className="text-white/80">
+          <BreadcrumbList className="text-muted-foreground/80">
             {breadcrumbs.map((crumb, index) => (
               <div key={crumb.href} className="flex items-center">
-                {index > 0 && <BreadcrumbSeparator className="text-white/60" />}
+                {index > 0 && <BreadcrumbSeparator className="text-muted-foreground/40" />}
                 <BreadcrumbItem>
                   {index === breadcrumbs.length - 1 ? (
-                    <BreadcrumbPage className="text-white font-medium">
+                    <BreadcrumbPage className="text-primary font-semibold tracking-wide">
                       {crumb.label}
                     </BreadcrumbPage>
                   ) : (
                     <BreadcrumbLink 
                       href={crumb.href}
-                      className="text-white/80 hover:text-white transition-colors"
+                      className="text-muted-foreground hover:text-primary transition-colors"
                     >
                       {crumb.label}
                     </BreadcrumbLink>
@@ -275,20 +276,20 @@ export const Header = () => {
 
       {/* Mobile Menu */}
       {mobileMenuOpen && (
-        <div className="lg:hidden bg-white/10 backdrop-blur-sm border-t border-white/20">
-          <div className="px-4 py-2 space-y-2">
+        <div className="lg:hidden bg-background/95 backdrop-blur-xl border-t border-white/10 shadow-elevated">
+          <div className="px-4 py-3 space-y-2">
             {navigationItems.map((item) => (
               <Button
                 key={item.href}
                 variant="ghost"
-                className="w-full justify-start text-white hover:bg-white/20 min-h-[48px] py-3 text-base"
+                className="w-full justify-start text-foreground hover:bg-primary/10 hover:text-primary min-h-[48px] py-3 text-base transition-colors"
                 onClick={() => {
                   navigate(item.href);
                   setMobileMenuOpen(false);
                 }}
               >
                 <item.icon className="h-5 w-5 mr-3" />
-                {item.label}
+                <span className="font-medium">{item.label}</span>
               </Button>
             ))}
           </div>

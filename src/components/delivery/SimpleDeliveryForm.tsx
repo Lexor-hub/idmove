@@ -6,7 +6,6 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { apiService } from '@/services/api';
-import { processImageOCR } from '@/services/ocrService';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   Upload,
@@ -17,6 +16,9 @@ import {
   Eye,
   AlertCircle,
   Image as ImageIcon,
+  Building2,
+  Truck,
+  User,
 } from 'lucide-react';
 
 interface Driver {
@@ -47,7 +49,9 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
   const cameraInputRef = useRef<HTMLInputElement>(null);
 
   // Form fields
-  const [cnpj, setCnpj] = useState('');
+  const [cnpjDestinatario, setCnpjDestinatario] = useState('');
+  const [cnpjEmitente, setCnpjEmitente] = useState('');
+  const [cnpjTransportadora, setCnpjTransportadora] = useState('');
   const [clientName, setClientName] = useState('');
   const [nfNumber, setNfNumber] = useState('');
   const [nfDate, setNfDate] = useState(new Date().toISOString().split('T')[0]);
@@ -57,9 +61,7 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
   // File & OCR state
   const [nfImageFile, setNfImageFile] = useState<File | null>(null);
   const [nfImagePreview, setNfImagePreview] = useState<string | null>(null);
-  const [processing, setProcessing] = useState(false);
-  const [ocrProgress, setOcrProgress] = useState(0);
-  const [ocrStatus, setOcrStatus] = useState('');
+  const [geminiLoading, setGeminiLoading] = useState(false);
   const [ocrDone, setOcrDone] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -90,7 +92,9 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
   }, [open]);
 
   const resetForm = () => {
-    setCnpj('');
+    setCnpjDestinatario('');
+    setCnpjEmitente('');
+    setCnpjTransportadora('');
     setClientName('');
     setNfNumber('');
     setNfDate(new Date().toISOString().split('T')[0]);
@@ -98,9 +102,7 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
     setDeliveryAddress('');
     setNfImageFile(null);
     setNfImagePreview(null);
-    setProcessing(false);
-    setOcrProgress(0);
-    setOcrStatus('');
+    setGeminiLoading(false);
     setOcrDone(false);
     setSaving(false);
   };
@@ -109,11 +111,11 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
     const file = event.target.files?.[0];
     if (!file) return;
 
-    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/bmp'];
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
     if (!allowedTypes.includes(file.type)) {
       toast({
-        title: 'Tipo não suportado',
-        description: 'Apenas imagens JPG, PNG, WebP e BMP',
+        title: 'Formato de imagem inválido.',
+        description: 'Apenas imagens JPG, PNG e WebP são aceitas.',
         variant: 'destructive',
       });
       return;
@@ -135,65 +137,54 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
     reader.onload = (e) => setNfImagePreview(e.target?.result as string);
     reader.readAsDataURL(file);
 
-    // Reset input so the same file can be selected again
     event.target.value = '';
   };
 
-  const handleProcessOCR = async () => {
+  const handleReadNfe = async () => {
     if (!nfImageFile) return;
 
-    setProcessing(true);
-    setOcrProgress(0);
-    setOcrStatus('Iniciando...');
-
+    setGeminiLoading(true);
     try {
-      const result = await processImageOCR(nfImageFile, (progress, status) => {
-        setOcrProgress(progress);
-        setOcrStatus(status);
-      });
+      const response = await apiService.extractNfeWithGemini(nfImageFile);
 
-      // Auto-fill fields if available
-      if (result.cnpj) setCnpj(result.cnpj);
-      if (result.clientName) setClientName(result.clientName);
-      if (result.nfNumber) setNfNumber(result.nfNumber);
+      if (!response.success || !response.data) {
+        toast({
+          title: 'Erro na leitura da NF-e',
+          description: response.error || 'Não foi possível ler a NF-e. Preencha os dados manualmente.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      const r = response.data;
+      if (r.numero_nfe) setNfNumber(r.numero_nfe);
+      if (r.cnpj_destinatario) setCnpjDestinatario(r.cnpj_destinatario);
+      if (r.cnpj_emitente) setCnpjEmitente(r.cnpj_emitente);
+      if (r.cnpj_transportadora) setCnpjTransportadora(r.cnpj_transportadora);
+      if (r.nome_destinatario) setClientName(r.nome_destinatario);
+      if (r.endereco_destinatario) setDeliveryAddress(r.endereco_destinatario);
 
       setOcrDone(true);
 
-      const fieldsFound = [result.cnpj, result.clientName, result.nfNumber].filter(Boolean).length;
-
-      if (fieldsFound === 0 && result.confidence === 0) {
-        // OCR service unavailable
-        toast({
-          title: 'OCR indisponível',
-          description: 'Preencha os dados manualmente',
-          variant: 'default',
-        });
-      } else if (fieldsFound > 0) {
-        toast({
-          title: 'OCR concluído com sucesso',
-          description: `${fieldsFound} campo(s) identificado(s) — confiança: ${result.confidence.toFixed(0)}%`,
-        });
-      } else {
-        toast({
-          title: 'OCR concluído',
-          description: 'Nenhum dado identificado automaticamente. Preencha manualmente.',
-          variant: 'default',
-        });
-      }
-    } catch (err) {
-      console.error('OCR Error:', err);
+      const filled = [r.numero_nfe, r.cnpj_destinatario, r.nome_destinatario, r.endereco_destinatario].filter(Boolean).length;
       toast({
-        title: 'Erro ao processar documento',
-        description: err instanceof Error ? err.message : 'Tente com uma imagem mais nítida ou preencha manualmente',
+        title: filled > 0 ? 'NF-e lida com sucesso' : 'Nenhum dado identificado',
+        description: filled > 0
+          ? 'Verifique e ajuste os campos se necessário.'
+          : 'Não foi possível ler a NF-e. Preencha os dados manualmente.',
+      });
+    } catch (err) {
+      toast({
+        title: 'Erro na leitura da NF-e',
+        description: err instanceof Error ? err.message : 'Tente novamente ou preencha manualmente.',
         variant: 'destructive',
       });
     } finally {
-      setProcessing(false);
+      setGeminiLoading(false);
     }
   };
 
   const handleSave = async () => {
-    // Validate required fields
     if (!nfNumber.trim()) {
       toast({ title: 'Número da NF-e é obrigatório', variant: 'destructive' });
       return;
@@ -205,7 +196,6 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
 
     setSaving(true);
     try {
-      // Determine driver_id
       let driverId: string | null = null;
       if (mode === 'driver') {
         driverId = user?.driver_id?.toString() || user?.id?.toString() || null;
@@ -213,17 +203,20 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
         driverId = selectedDriverId;
       }
 
+      const notesParts: string[] = [];
+      if (cnpjEmitente) notesParts.push(`Emitente: ${cnpjEmitente}`);
+      if (cnpjTransportadora) notesParts.push(`Transportadora: ${cnpjTransportadora}`);
+
       const payload: Record<string, any> = {
         nf_number: nfNumber.trim(),
         client_name: clientName.trim(),
-        client_cnpj: cnpj.trim(),
+        client_cnpj: cnpjDestinatario.trim(),
         delivery_address: deliveryAddress.trim() || 'Endereço não informado',
         scheduled_date: nfDate,
         driver_id: driverId,
-        notes: cnpj ? `CNPJ: ${cnpj}` : undefined,
+        notes: notesParts.length > 0 ? notesParts.join(' | ') : undefined,
       };
 
-      // Attach the NF image file for upload
       if (nfImageFile) {
         payload.file = nfImageFile;
       }
@@ -266,7 +259,7 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
         </DialogHeader>
 
         <div className="space-y-5">
-          {/* Step 1: NF-e Image */}
+          {/* NF-e Image */}
           <div className="space-y-2">
             <Label className="text-sm font-semibold">Imagem da NF-e</Label>
 
@@ -314,7 +307,6 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
               </div>
             ) : (
               <div className="space-y-2">
-                {/* Image preview */}
                 <div className="rounded-lg overflow-hidden border bg-gray-50">
                   <img
                     src={nfImagePreview!}
@@ -340,18 +332,18 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
                     >
                       Trocar
                     </Button>
-                    {!ocrDone && !processing && (
+                    {!ocrDone && !geminiLoading && (
                       <Button
                         type="button"
                         size="sm"
-                        onClick={handleProcessOCR}
+                        onClick={handleReadNfe}
                         className="gap-1"
                       >
                         <Eye className="h-3 w-3" />
-                        OCR
+                        Ler NF-e
                       </Button>
                     )}
-                    {!ocrDone && !processing && (
+                    {!ocrDone && !geminiLoading && (
                       <Button
                         type="button"
                         size="sm"
@@ -364,107 +356,112 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
                   </div>
                 </div>
 
-                {/* OCR Progress */}
-                {processing && (
-                  <div className="space-y-2 p-3 bg-blue-50 rounded-lg">
-                    <div className="flex items-center gap-2">
-                      <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
-                      <span className="text-xs font-medium text-blue-800">{ocrStatus}</span>
-                    </div>
-                    <div className="w-full bg-blue-200 rounded-full h-1.5">
-                      <div
-                        className="bg-blue-600 h-1.5 rounded-full transition-all duration-300"
-                        style={{ width: `${ocrProgress}%` }}
-                      />
-                    </div>
+                {geminiLoading && (
+                  <div className="flex items-center gap-2 p-3 bg-blue-50 rounded-lg">
+                    <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+                    <span className="text-xs font-medium text-blue-800">Lendo NF-e com IA...</span>
                   </div>
                 )}
 
-                {/* OCR Success indicator */}
-                {ocrDone && !processing && (
+                {ocrDone && !geminiLoading && (
                   <div className="flex items-center gap-1 text-xs text-green-700">
                     <CheckCircle className="h-3 w-3" />
-                    Dados extraídos via OCR — verifique abaixo
+                    Dados extraídos — verifique e ajuste abaixo
                   </div>
                 )}
               </div>
             )}
           </div>
 
-          {/* Step 2: Form Fields */}
-          <div className="grid grid-cols-1 gap-4">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <Label htmlFor="nfNumber" className="text-xs">
-                  Nº NF-e *
-                </Label>
-                <Input
-                  id="nfNumber"
-                  value={nfNumber}
-                  onChange={(e) => setNfNumber(e.target.value)}
-                  placeholder="Ex: 12345"
-                />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="cnpj" className="text-xs">
-                  CNPJ
-                </Label>
-                <Input
-                  id="cnpj"
-                  value={cnpj}
-                  onChange={(e) => setCnpj(e.target.value)}
-                  placeholder="00.000.000/0000-00"
-                />
-              </div>
-            </div>
-
+          {/* NF-e number + date */}
+          <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
-              <Label htmlFor="clientName" className="text-xs">
-                Nome do Cliente *
+              <Label htmlFor="nfNumber" className="text-xs">
+                Nº NF-e *
               </Label>
               <Input
-                id="clientName"
-                value={clientName}
-                onChange={(e) => setClientName(e.target.value)}
-                placeholder="Razão social ou nome"
+                id="nfNumber"
+                value={nfNumber}
+                onChange={(e) => setNfNumber(e.target.value)}
+                placeholder="Ex: 316318"
               />
             </div>
+            <div className="space-y-1">
+              <Label htmlFor="nfDate" className="text-xs">
+                Data
+              </Label>
+              <Input
+                id="nfDate"
+                type="date"
+                value={nfDate}
+                onChange={(e) => setNfDate(e.target.value)}
+              />
+            </div>
+          </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <Label htmlFor="nfDate" className="text-xs">
-                  Data
-                </Label>
+          {/* CNPJs section */}
+          <div className="space-y-2">
+            <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">CNPJs da Nota</p>
+            <div className="rounded-lg border border-gray-200 divide-y divide-gray-100">
+              {/* Emitente / Remetente */}
+              <div className="flex items-center gap-3 px-3 py-2">
+                <div className="flex items-center gap-1.5 w-28 shrink-0">
+                  <Building2 className="h-3.5 w-3.5 text-gray-400" />
+                  <span className="text-xs text-gray-500">Remetente</span>
+                </div>
                 <Input
-                  id="nfDate"
-                  type="date"
-                  value={nfDate}
-                  onChange={(e) => setNfDate(e.target.value)}
+                  value={cnpjEmitente}
+                  onChange={(e) => setCnpjEmitente(e.target.value)}
+                  placeholder="00.000.000/0000-00"
+                  className="h-7 text-xs border-0 shadow-none focus-visible:ring-0 p-0"
                 />
               </div>
 
-              {allowDriverSelection && (
-                <div className="space-y-1">
-                  <Label htmlFor="driver" className="text-xs">
-                    Motorista
-                  </Label>
-                  <Select value={selectedDriverId} onValueChange={setSelectedDriverId}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Selecione" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Sem motorista</SelectItem>
-                      {drivers.map((d) => (
-                        <SelectItem key={d.id} value={d.id}>
-                          {d.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+              {/* Destinatário / Cliente */}
+              <div className="flex items-center gap-3 px-3 py-2">
+                <div className="flex items-center gap-1.5 w-28 shrink-0">
+                  <User className="h-3.5 w-3.5 text-gray-400" />
+                  <span className="text-xs text-gray-500">Destinatário</span>
                 </div>
-              )}
-            </div>
+                <Input
+                  value={cnpjDestinatario}
+                  onChange={(e) => setCnpjDestinatario(e.target.value)}
+                  placeholder="00.000.000/0000-00"
+                  className="h-7 text-xs border-0 shadow-none focus-visible:ring-0 p-0"
+                />
+              </div>
 
+              {/* Transportadora */}
+              <div className="flex items-center gap-3 px-3 py-2">
+                <div className="flex items-center gap-1.5 w-28 shrink-0">
+                  <Truck className="h-3.5 w-3.5 text-gray-400" />
+                  <span className="text-xs text-gray-500">Transportadora</span>
+                </div>
+                <Input
+                  value={cnpjTransportadora}
+                  onChange={(e) => setCnpjTransportadora(e.target.value)}
+                  placeholder="00.000.000/0000-00"
+                  className="h-7 text-xs border-0 shadow-none focus-visible:ring-0 p-0"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Client name */}
+          <div className="space-y-1">
+            <Label htmlFor="clientName" className="text-xs">
+              Nome do Cliente *
+            </Label>
+            <Input
+              id="clientName"
+              value={clientName}
+              onChange={(e) => setClientName(e.target.value)}
+              placeholder="Razão social ou nome"
+            />
+          </div>
+
+          {/* Address + driver */}
+          <div className="grid grid-cols-1 gap-3">
             <div className="space-y-1">
               <Label htmlFor="address" className="text-xs">
                 Endereço de Entrega
@@ -476,6 +473,27 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
                 placeholder="Endereço completo (opcional)"
               />
             </div>
+
+            {allowDriverSelection && (
+              <div className="space-y-1">
+                <Label htmlFor="driver" className="text-xs">
+                  Motorista
+                </Label>
+                <Select value={selectedDriverId} onValueChange={setSelectedDriverId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecione" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Sem motorista</SelectItem>
+                    {drivers.map((d) => (
+                      <SelectItem key={d.id} value={d.id}>
+                        {d.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
           </div>
 
           {/* Save Button */}

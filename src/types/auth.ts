@@ -78,6 +78,7 @@ export interface CompaniesResponse {
 
 export interface DriverLocation {
   driver_id: string;
+  session_id?: string;
   driver_name: string;
   latitude: number;
   longitude: number;
@@ -85,6 +86,7 @@ export interface DriverLocation {
   speed: number;
   heading: number;
   last_update: string;
+  recorded_at?: string;
   status: string;
   activity_status: 'idle' | 'active';
   current_delivery_id?: string;

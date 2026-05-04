@@ -1,24 +1,31 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { apiService } from '@/services/api';
+import { shouldSendTrackingPoint, toKmh, type TrackingSample } from '@/lib/driver-tracking';
+
+export type DriverTrackingPosition = TrackingSample & {
+  speed?: number | null;
+  heading?: number | null;
+};
 
 interface UseDriverLocationOptions {
   driverId: string;
+  sessionId?: string | null;
   active: boolean;
-  intervalSeconds?: number;
+  onPosition?: (position: DriverTrackingPosition) => void;
   onError?: (error: GeolocationPositionError | Error) => void;
 }
 
 interface BgLocation {
   latitude: number;
   longitude: number;
-  accuracy?: number;
-  altitude?: number;
-  altitudeAccuracy?: number;
+  accuracy?: number | null;
+  altitude?: number | null;
+  altitudeAccuracy?: number | null;
   simulated?: boolean;
-  speed?: number;
-  bearing?: number;
-  time?: number;
+  speed?: number | null;
+  bearing?: number | null;
+  time?: number | null;
 }
 
 interface BackgroundGeolocationPlugin {
@@ -37,62 +44,117 @@ interface BackgroundGeolocationPlugin {
 
 const BackgroundGeolocation = registerPlugin<BackgroundGeolocationPlugin>('BackgroundGeolocation');
 
-export function useDriverLocation({ driverId, active, intervalSeconds = 15, onError }: UseDriverLocationOptions) {
-  const watchRef = useRef<number | null>(null);
+const isFiniteCoordinate = (latitude: number, longitude: number) =>
+  Number.isFinite(latitude) &&
+  Number.isFinite(longitude) &&
+  latitude >= -90 &&
+  latitude <= 90 &&
+  longitude >= -180 &&
+  longitude <= 180;
+
+export function useDriverLocation({ driverId, sessionId, active, onPosition, onError }: UseDriverLocationOptions) {
+  const webWatchRef = useRef<number | null>(null);
   const bgGeoRef = useRef<string | null>(null);
-  const lastSentAtRef = useRef<number>(0);
+  const lastSentRef = useRef<DriverTrackingPosition | null>(null);
+  const [lastPosition, setLastPosition] = useState<DriverTrackingPosition | null>(null);
+  const [isWatching, setIsWatching] = useState(false);
+  const [isRequesting, setIsRequesting] = useState(false);
 
   useEffect(() => {
-    if (!active || !driverId) return;
+    if (!active || !driverId || !sessionId) {
+      lastSentRef.current = null;
+      setIsWatching(false);
+      setIsRequesting(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const handleError = (error: GeolocationPositionError | Error) => {
+      if (cancelled) return;
+      setIsRequesting(false);
+      setIsWatching(false);
+      onError?.(error);
+    };
+
+    const sendPosition = async (position: DriverTrackingPosition) => {
+      if (cancelled) return;
+      if (!isFiniteCoordinate(position.latitude, position.longitude)) return;
+      if (!shouldSendTrackingPoint({ previous: lastSentRef.current, next: position })) return;
+
+      lastSentRef.current = position;
+      setLastPosition(position);
+      setIsRequesting(false);
+      onPosition?.(position);
+
+      const response = await apiService.recordDriverLocation({
+        session_id: sessionId,
+        driver_id: driverId,
+        latitude: position.latitude,
+        longitude: position.longitude,
+        accuracy: position.accuracy ?? undefined,
+        speed: position.speed ?? undefined,
+        heading: position.heading ?? undefined,
+        recorded_at: new Date(position.recordedAt).toISOString(),
+      });
+
+      if (!response.success) {
+        console.warn('[useDriverLocation] Falha ao enviar posicao:', response.error);
+        handleError(new Error(response.error));
+      }
+    };
 
     const isNative = Capacitor.isNativePlatform();
+    setIsRequesting(true);
 
     if (isNative) {
-      let cancelled = false;
-
       (async () => {
         try {
           const id = await BackgroundGeolocation.addWatcher(
             {
               backgroundMessage: 'Rastreamento de rota ativo.',
-              backgroundTitle: 'ID Move — Rota em andamento',
+              backgroundTitle: 'ID Move - Rota em andamento',
               requestPermissions: true,
               stale: false,
-              distanceFilter: 10,
+              distanceFilter: 1,
             },
-            async (location, error) => {
+            (location, error) => {
               if (error) {
                 console.warn('[useDriverLocation] BG geolocation error:', error);
-                onError?.(new Error(error.message ?? error.code));
+                handleError(new Error(error.message || error.code));
                 return;
               }
               if (!location) return;
-              try {
-                await apiService.upsertDriverPosition(driverId, location.latitude, location.longitude);
-                lastSentAtRef.current = Date.now();
-              } catch (rpcError) {
-                console.warn('[useDriverLocation] RPC upsert failed (native):', rpcError);
-              }
+
+              void sendPosition({
+                latitude: location.latitude,
+                longitude: location.longitude,
+                accuracy: location.accuracy ?? null,
+                speed: toKmh(location.speed),
+                heading: location.bearing ?? null,
+                recordedAt: location.time || Date.now(),
+              });
             },
           );
 
           if (cancelled) {
-            try {
-              await BackgroundGeolocation.removeWatcher({ id });
-            } catch { /* noop */ }
+            await BackgroundGeolocation.removeWatcher({ id }).catch(() => undefined);
             return;
           }
 
           bgGeoRef.current = id;
+          setIsWatching(true);
           console.info('[useDriverLocation] Background tracking iniciado para driver', driverId);
         } catch (err) {
           console.warn('[useDriverLocation] Background geolocation indisponivel:', err);
-          onError?.(err instanceof Error ? err : new Error(String(err)));
+          handleError(err instanceof Error ? err : new Error(String(err)));
         }
       })();
 
       return () => {
         cancelled = true;
+        setIsWatching(false);
+        setIsRequesting(false);
         const id = bgGeoRef.current;
         bgGeoRef.current = null;
         if (id) {
@@ -104,45 +166,46 @@ export function useDriverLocation({ driverId, active, intervalSeconds = 15, onEr
     }
 
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      const err = new Error('Geolocation API indisponivel neste navegador');
-      console.warn('[useDriverLocation]', err.message);
-      onError?.(err);
+      handleError(new Error('Geolocation API indisponivel neste navegador'));
       return;
     }
 
-    const minIntervalMs = Math.max(intervalSeconds * 1000, 1000);
+    webWatchRef.current = navigator.geolocation.watchPosition(
+      (pos) => {
+        void sendPosition({
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          accuracy: typeof pos.coords.accuracy === 'number' ? pos.coords.accuracy : null,
+          speed: toKmh(pos.coords.speed),
+          heading: typeof pos.coords.heading === 'number' ? pos.coords.heading : null,
+          recordedAt: pos.timestamp || Date.now(),
+        });
+      },
+      (err) => {
+        console.warn('[useDriverLocation] Geolocation error:', err.code, err.message);
+        handleError(err);
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 0,
+        timeout: 10_000,
+      },
+    );
 
-    const sendPosition = async (pos: GeolocationPosition) => {
-      const now = Date.now();
-      if (now - lastSentAtRef.current < minIntervalMs) return;
-      lastSentAtRef.current = now;
-      try {
-        await apiService.upsertDriverPosition(driverId, pos.coords.latitude, pos.coords.longitude);
-        console.debug('[useDriverLocation] Posicao enviada:', pos.coords.latitude, pos.coords.longitude);
-      } catch (err) {
-        console.warn('[useDriverLocation] Falha ao enviar posicao:', err);
-      }
-    };
-
-    const handleError = (err: GeolocationPositionError) => {
-      console.warn('[useDriverLocation] Geolocation error:', err.code, err.message);
-      onError?.(err);
-    };
-
-    watchRef.current = navigator.geolocation.watchPosition(sendPosition, handleError, {
-      enableHighAccuracy: true,
-      maximumAge: minIntervalMs,
-      timeout: 30000,
-    });
-
+    setIsWatching(true);
     console.info('[useDriverLocation] Web tracking iniciado para driver', driverId);
 
     return () => {
-      if (watchRef.current !== null) {
-        navigator.geolocation.clearWatch(watchRef.current);
-        watchRef.current = null;
+      cancelled = true;
+      setIsWatching(false);
+      setIsRequesting(false);
+      if (webWatchRef.current !== null) {
+        navigator.geolocation.clearWatch(webWatchRef.current);
+        webWatchRef.current = null;
         console.info('[useDriverLocation] Web tracking encerrado');
       }
     };
-  }, [active, driverId, intervalSeconds, onError]);
+  }, [active, driverId, sessionId, onError, onPosition]);
+
+  return { isWatching, isRequesting, lastPosition };
 }

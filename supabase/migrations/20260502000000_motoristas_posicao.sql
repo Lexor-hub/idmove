@@ -55,7 +55,17 @@ $$;
 GRANT EXECUTE ON FUNCTION public.upsert_driver_position TO authenticated;
 
 -- 5. Habilitar Realtime nesta tabela
-ALTER PUBLICATION supabase_realtime ADD TABLE public.motoristas_posicao;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables
+    WHERE pubname = 'supabase_realtime'
+      AND schemaname = 'public'
+      AND tablename = 'motoristas_posicao'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.motoristas_posicao;
+  END IF;
+END $$;
 
 -- 6. RLS
 ALTER TABLE public.motoristas_posicao ENABLE ROW LEVEL SECURITY;
