@@ -14,6 +14,7 @@ export type ProfileRow = {
   cpf: string | null;
   status: 'ATIVO' | 'INATIVO';
   is_active: boolean;
+  view_company_data: boolean;
   created_at: string;
   updated_at: string;
 };

@@ -606,8 +606,8 @@ class ApiService {
       if (filters?.date_from) query = query.gte('scheduled_date', filters.date_from);
       if (filters?.date_to) query = query.lte('scheduled_date', filters.date_to);
 
-      if (filters?.client === 'current') {
-        if (ctx.profile.role !== 'CLIENT' && ctx.clientId) query = query.eq('client_id', ctx.clientId);
+      if (filters?.client === 'current' && ctx.clientId && !ctx.profile.view_company_data) {
+        query = query.eq('client_id', ctx.clientId);
       }
 
       const { data, error } = await query;
@@ -1003,14 +1003,33 @@ class ApiService {
 
   async getCanhotos(filters?: Record<string, string>) {
     return this.run(async () => {
+      const ctx = await this.getContext();
+
+      // CLIENT: limita por client_id (busca os IDs das entregas próprias antes)
+      // Exceção: clientes "demo" (view_company_data=true) veem tudo da empresa.
+      let allowedDeliveryIds: string[] | null = null;
+      if (ctx.profile.role === 'CLIENT' && ctx.clientId && !ctx.profile.view_company_data) {
+        const { data: deliveryRows } = await supabase
+          .from('deliveries')
+          .select('id')
+          .eq('client_id', ctx.clientId);
+        allowedDeliveryIds = (deliveryRows || []).map((row: any) => String(row.id));
+        if (allowedDeliveryIds.length === 0) return [];
+      }
+
       let query = supabase
         .from('delivery_receipts')
-        .select('*, deliveries(nf_number,client_name), drivers(name)')
+        .select('*, deliveries(nf_number,client_name,client_id,delivered_at,scheduled_date), drivers(name)')
         .order('created_at', { ascending: false });
 
-      const ctx = await this.getContext();
       if (ctx.profile.role !== 'MASTER') {
         query = query.eq('company_id', ctx.profile.company_id);
+      }
+      if (ctx.profile.role === 'DRIVER' && ctx.driverId) {
+        query = query.eq('driver_id', ctx.driverId);
+      }
+      if (allowedDeliveryIds) {
+        query = query.in('delivery_id', allowedDeliveryIds);
       }
 
       if (filters?.delivery_id) query = query.eq('delivery_id', filters.delivery_id);
@@ -1028,6 +1047,8 @@ class ApiService {
         nf_number: receipt.deliveries?.nf_number,
         client_name: receipt.deliveries?.client_name,
         driver_name: receipt.drivers?.name,
+        delivered_at: receipt.deliveries?.delivered_at || null,
+        scheduled_date: receipt.deliveries?.scheduled_date || null,
       }));
     });
   }
@@ -1283,7 +1304,7 @@ class ApiService {
     return this.run(async () => {
       let query = supabase
         .from('occurrences')
-        .select('*, deliveries(client_name), drivers(name)')
+        .select('*, deliveries(nf_number,client_name,scheduled_date), drivers(name)')
         .order('created_at', { ascending: false });
 
       const ctx = await this.getContext();
@@ -1308,6 +1329,8 @@ class ApiService {
         photo_url: item.photo_url || publicUrl('receipts', item.photo_path),
         driver_name: item.drivers?.name || 'Motorista',
         client_name: item.deliveries?.client_name || 'Cliente',
+        nf_number: item.deliveries?.nf_number || null,
+        scheduled_date: item.deliveries?.scheduled_date || null,
         rescheduled_delivery_id: item.rescheduled_delivery_id || null,
         next_scheduled_date: item.next_scheduled_date || null,
       }));

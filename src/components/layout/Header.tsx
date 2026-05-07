@@ -103,6 +103,7 @@ export const Header = () => {
       case 'CLIENT':
         return [
           { href: '/dashboard', label: 'Minhas Entregas', icon: Package },
+          { href: '/dashboard/entregas', label: 'Canhotos', icon: FileText },
           { href: '/dashboard/relatorios', label: 'Relatórios', icon: BarChart3 },
         ];
       default:

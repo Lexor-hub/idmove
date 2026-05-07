@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { StatsCard } from '@/components/dashboard/StatsCard';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -20,6 +20,7 @@ import {
 import { apiService } from '@/services/api';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
 
 type DeliveryStatusPtBR = 'Pendente' | 'Atribuída' | 'Em Trânsito' | 'Entregue' | 'Problema' | 'Cancelada';
 
@@ -121,6 +122,21 @@ export const ClientDashboard = () => {
   const [showReceiptModal, setShowReceiptModal] = useState(false);
   const { toast } = useToast();
   const { user } = useAuth();
+
+  const statusChartData = useMemo(() => {
+    const data = [
+      { name: 'Entregue', value: stats.entregasRealizadas, color: '#22c55e' },
+      { name: 'Em Trânsito', value: stats.emTransito, color: '#3b82f6' },
+      { name: 'Pendente', value: stats.pendentes, color: '#eab308' },
+      { name: 'Problema', value: deliveries.filter((d) => d.statusPtBR === 'Problema').length, color: '#ef4444' },
+    ];
+    return data.filter((item) => item.value > 0);
+  }, [stats, deliveries]);
+
+  const receiptsList = useMemo(
+    () => deliveries.filter((d) => d.receipt_image_url),
+    [deliveries]
+  );
 
   useEffect(() => {
     loadClientData();
@@ -440,89 +456,107 @@ export const ClientDashboard = () => {
 
           {/* Sidebar */}
           <div className="space-y-6">
-            {/* Status Summary */}
+            {/* Donut Chart */}
             <Card>
               <CardHeader>
-                <CardTitle>Status das Entregas</CardTitle>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <BarChart3 className="h-4 w-4" />
+                  Status das Entregas
+                </CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 bg-green-500 rounded-full" />
-                      <span className="text-sm">Entregues</span>
+                {statusChartData.length === 0 ? (
+                  <p className="text-center text-sm text-muted-foreground py-8">
+                    Sem entregas para exibir
+                  </p>
+                ) : (
+                  <div className="relative">
+                    <ResponsiveContainer width="100%" height={220}>
+                      <PieChart>
+                        <Pie
+                          data={statusChartData}
+                          dataKey="value"
+                          nameKey="name"
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={55}
+                          outerRadius={85}
+                          paddingAngle={2}
+                          stroke="none"
+                        >
+                          {statusChartData.map((entry) => (
+                            <Cell key={entry.name} fill={entry.color} />
+                          ))}
+                        </Pie>
+                        <Tooltip
+                          formatter={(value: number, name: string) => [`${value} entregas`, name]}
+                          contentStyle={{ borderRadius: 8, fontSize: 12 }}
+                        />
+                        <Legend
+                          verticalAlign="bottom"
+                          height={36}
+                          iconType="circle"
+                          wrapperStyle={{ fontSize: 12 }}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                    <div className="absolute top-[40%] left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none">
+                      <p className="text-2xl font-bold">{stats.totalEntregas}</p>
+                      <p className="text-xs text-muted-foreground">Total</p>
                     </div>
-                    <span className="text-sm font-medium">{stats.entregasRealizadas}</span>
                   </div>
-                  
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 bg-blue-500 rounded-full" />
-                      <span className="text-sm">Em Trânsito</span>
-                    </div>
-                    <span className="text-sm font-medium">{stats.emTransito}</span>
-                  </div>
-                  
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 bg-yellow-500 rounded-full" />
-                      <span className="text-sm">Pendentes</span>
-                    </div>
-                    <span className="text-sm font-medium">{stats.pendentes}</span>
-                  </div>
-                </div>
-
+                )}
                 {stats.totalEntregas > 0 && (
-                  <div className="mt-4 pt-4 border-t">
-                    <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
-                      <div className="flex h-full">
-                        <div
-                          className="bg-green-500 h-full transition-all"
-                          style={{ width: `${(stats.entregasRealizadas / stats.totalEntregas) * 100}%` }}
-                        />
-                        <div
-                          className="bg-blue-500 h-full transition-all"
-                          style={{ width: `${(stats.emTransito / stats.totalEntregas) * 100}%` }}
-                        />
-                        <div
-                          className="bg-yellow-500 h-full transition-all"
-                          style={{ width: `${(stats.pendentes / stats.totalEntregas) * 100}%` }}
-                        />
-                      </div>
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-2 text-center">
-                      {((stats.entregasRealizadas / stats.totalEntregas) * 100).toFixed(0)}% concluído
-                    </p>
-                  </div>
+                  <p className="text-xs text-muted-foreground mt-2 text-center">
+                    {((stats.entregasRealizadas / stats.totalEntregas) * 100).toFixed(0)}% concluído
+                  </p>
                 )}
               </CardContent>
             </Card>
 
-            {/* Info Card */}
+            {/* Lista de Canhotos */}
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <FileText className="h-4 w-4" />
-                  Legenda de Status
+                <CardTitle className="flex items-center justify-between text-base">
+                  <span className="flex items-center gap-2">
+                    <FileText className="h-4 w-4" />
+                    Lista de Canhotos
+                  </span>
+                  <Badge variant="secondary" className="text-xs">{receiptsList.length}</Badge>
                 </CardTitle>
               </CardHeader>
-              <CardContent className="space-y-2 text-sm">
-                <div className="flex items-center gap-2">
-                  <Badge className="bg-yellow-100 text-yellow-800 text-xs">Pendente</Badge>
-                  <span className="text-muted-foreground">Entrega ainda não saiu</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge className="bg-indigo-100 text-indigo-800 text-xs">Atribuída</Badge>
-                  <span className="text-muted-foreground">Motorista designado</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge className="bg-blue-100 text-blue-800 text-xs">Em Trânsito</Badge>
-                  <span className="text-muted-foreground">Mercadoria a caminho</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge className="bg-green-100 text-green-800 text-xs">Entregue</Badge>
-                  <span className="text-muted-foreground">Entrega concluída</span>
-                </div>
+              <CardContent>
+                {receiptsList.length === 0 ? (
+                  <p className="text-center text-sm text-muted-foreground py-6">
+                    Nenhum canhoto disponível ainda
+                  </p>
+                ) : (
+                  <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
+                    {receiptsList.map((delivery) => (
+                      <button
+                        key={delivery.id}
+                        onClick={() => handleViewReceipt(delivery.receipt_image_url!)}
+                        className="w-full flex items-center gap-3 p-2 rounded-lg border hover:bg-muted/40 transition-colors text-left"
+                      >
+                        <img
+                          src={delivery.receipt_image_url!}
+                          alt={`Canhoto NF ${delivery.nfNumber}`}
+                          className="h-12 w-12 rounded object-cover border shrink-0"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">NF {delivery.nfNumber}</p>
+                          <p className="text-xs text-muted-foreground truncate">
+                            {delivery.driver || 'Motorista'} •{' '}
+                            {delivery.date
+                              ? new Date(delivery.date).toLocaleDateString('pt-BR')
+                              : '—'}
+                          </p>
+                        </div>
+                        <ImageIcon className="h-4 w-4 text-muted-foreground shrink-0" />
+                      </button>
+                    ))}
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>

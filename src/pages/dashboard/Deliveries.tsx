@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
+import { useAuth } from '@/contexts/AuthContext';
 import { Camera, Upload, FileText, Eye, CheckCircle, Loader2, AlertCircle } from 'lucide-react';
 
 interface Receipt {
@@ -35,6 +36,8 @@ interface OcrData {
 
 const Deliveries: React.FC = () => {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const isReadOnly = user?.role === 'CLIENT';
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -339,10 +342,12 @@ const Deliveries: React.FC = () => {
       <div className="flex flex-col gap-4 mb-6">
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold">Canhotos de Entregas</h1>
-          <Button onClick={() => setUploadDialog(true)} className="gap-2">
-            <Upload className="h-4 w-4" />
-            Novo Canhoto
-          </Button>
+          {!isReadOnly && (
+            <Button onClick={() => setUploadDialog(true)} className="gap-2">
+              <Upload className="h-4 w-4" />
+              Novo Canhoto
+            </Button>
+          )}
         </div>
         <form onSubmit={handleSearch} className="flex flex-col gap-2 w-full">
           <div className="flex flex-col gap-2 md:flex-row md:gap-2">

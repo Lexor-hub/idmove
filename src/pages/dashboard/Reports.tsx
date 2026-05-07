@@ -4,10 +4,12 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Download, Search, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
+import { Download, Search, ChevronLeft, ChevronRight, Loader2, AlertTriangle, FileText, BarChart3, Image as ImageIcon } from 'lucide-react';
 import { apiService } from '@/services/api';
 import { useToast } from '@/hooks/use-toast';
 import { Badge } from '@/components/ui/badge';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 // CORREÇÃO: A interface foi ajustada para corresponder à resposta da API `getDeliveries`.
 interface DeliveryReportItem {
@@ -174,30 +176,507 @@ const DeliveriesReportTab = () => {
   );
 };
 
-const PlaceholderTab = ({ title }: { title: string }) => (
-  <Card>
-    <CardHeader><CardTitle>{title}</CardTitle></CardHeader>
-    <CardContent><p>Este relatório está em desenvolvimento.</p></CardContent>
-  </Card>
-);
+interface OccurrenceItem {
+  id: string;
+  type: string;
+  description: string;
+  photo_url?: string | null;
+  driver_name?: string;
+  client_name?: string;
+  nf_number?: string | null;
+  created_at: string;
+}
+
+const occurrenceTypeLabel = (type: string) => {
+  switch ((type || '').toLowerCase()) {
+    case 'reentrega': return 'Reentrega';
+    case 'recusa': return 'Recusa';
+    case 'avaria': return 'Avaria';
+    default: return type || 'Outro';
+  }
+};
+
+const occurrenceTypeBadge = (type: string) => {
+  const lower = (type || '').toLowerCase();
+  if (lower === 'avaria') return <Badge variant="destructive">{occurrenceTypeLabel(type)}</Badge>;
+  if (lower === 'recusa') return <Badge className="bg-red-500 hover:bg-red-600 text-white">{occurrenceTypeLabel(type)}</Badge>;
+  if (lower === 'reentrega') return <Badge className="bg-yellow-500 hover:bg-yellow-600 text-white">{occurrenceTypeLabel(type)}</Badge>;
+  return <Badge variant="secondary">{occurrenceTypeLabel(type)}</Badge>;
+};
+
+const OccurrencesReportTab = () => {
+  const [items, setItems] = useState<OccurrenceItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [typeFilter, setTypeFilter] = useState<string>('ALL');
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const { toast } = useToast();
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      try {
+        const response = await apiService.getOccurrences();
+        if (response.success && Array.isArray(response.data)) {
+          setItems(response.data as OccurrenceItem[]);
+        } else {
+          toast({
+            title: 'Erro ao carregar ocorrências',
+            description: response.error || 'Não foi possível buscar os dados.',
+            variant: 'destructive',
+          });
+        }
+      } catch (error: any) {
+        toast({ title: 'Erro de Conexão', description: error.message, variant: 'destructive' });
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+  }, [toast]);
+
+  const filtered = useMemo(() => {
+    return items.filter(item => {
+      if (typeFilter !== 'ALL' && (item.type || '').toLowerCase() !== typeFilter.toLowerCase()) return false;
+      if (!searchTerm) return true;
+      const q = searchTerm.toLowerCase();
+      return (
+        (item.nf_number || '').toLowerCase().includes(q) ||
+        (item.client_name || '').toLowerCase().includes(q) ||
+        (item.driver_name || '').toLowerCase().includes(q) ||
+        (item.description || '').toLowerCase().includes(q)
+      );
+    });
+  }, [items, searchTerm, typeFilter]);
+
+  const exportToCSV = () => {
+    if (filtered.length === 0) {
+      toast({ title: 'Nenhum dado para exportar.' });
+      return;
+    }
+    const headers = ['NF', 'Cliente', 'Motorista', 'Tipo', 'Descrição', 'Data'];
+    const rows = [headers.join(',')];
+    filtered.forEach(item => {
+      rows.push([
+        `"${item.nf_number || ''}"`,
+        `"${(item.client_name || '').replace(/"/g, '""')}"`,
+        `"${(item.driver_name || '').replace(/"/g, '""')}"`,
+        `"${occurrenceTypeLabel(item.type)}"`,
+        `"${(item.description || '').replace(/"/g, '""')}"`,
+        `"${new Date(item.created_at).toLocaleString('pt-BR')}"`,
+      ].join(','));
+    });
+    const blob = new Blob([`﻿${rows.join('\n')}`], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `relatorio_ocorrencias_${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <AlertTriangle className="h-5 w-5" />
+          Ocorrências
+        </CardTitle>
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 mt-4">
+          <div className="flex flex-col sm:flex-row gap-2 flex-grow">
+            <div className="relative w-full sm:max-w-sm">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Buscar por NF, cliente, motorista, descrição..."
+                className="pl-8 w-full"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+            </div>
+            <Select value={typeFilter} onValueChange={setTypeFilter}>
+              <SelectTrigger className="w-full sm:w-[180px]">
+                <SelectValue placeholder="Tipo" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ALL">Todos os tipos</SelectItem>
+                <SelectItem value="reentrega">Reentrega</SelectItem>
+                <SelectItem value="recusa">Recusa</SelectItem>
+                <SelectItem value="avaria">Avaria</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <Button variant="outline" onClick={exportToCSV} disabled={filtered.length === 0 || loading}>
+            <Download className="mr-2 h-4 w-4" />
+            Exportar CSV
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>NF</TableHead>
+                <TableHead>Cliente</TableHead>
+                <TableHead>Motorista</TableHead>
+                <TableHead>Tipo</TableHead>
+                <TableHead>Descrição</TableHead>
+                <TableHead>Data</TableHead>
+                <TableHead className="text-right">Foto</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {loading ? (
+                <TableRow><TableCell colSpan={7} className="h-24 text-center"><Loader2 className="h-6 w-6 animate-spin mx-auto" /></TableCell></TableRow>
+              ) : filtered.length > 0 ? (
+                filtered.map((item) => (
+                  <TableRow key={item.id}>
+                    <TableCell className="font-medium">{item.nf_number || 'N/A'}</TableCell>
+                    <TableCell>{item.client_name || 'N/A'}</TableCell>
+                    <TableCell>{item.driver_name || 'N/A'}</TableCell>
+                    <TableCell>{occurrenceTypeBadge(item.type)}</TableCell>
+                    <TableCell className="max-w-xs truncate" title={item.description}>{item.description || '-'}</TableCell>
+                    <TableCell>{new Date(item.created_at).toLocaleString('pt-BR')}</TableCell>
+                    <TableCell className="text-right">
+                      {item.photo_url ? (
+                        <Button size="sm" variant="outline" onClick={() => setPhotoUrl(item.photo_url || null)}>
+                          <ImageIcon className="h-4 w-4 mr-1" /> Ver
+                        </Button>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">Sem foto</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))
+              ) : (
+                <TableRow><TableCell colSpan={7} className="h-24 text-center">Nenhuma ocorrência encontrada.</TableCell></TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+
+      <Dialog open={!!photoUrl} onOpenChange={(open) => !open && setPhotoUrl(null)}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Foto da ocorrência</DialogTitle>
+          </DialogHeader>
+          {photoUrl && (
+            <img src={photoUrl} alt="Ocorrência" className="w-full h-auto rounded-md" />
+          )}
+        </DialogContent>
+      </Dialog>
+    </Card>
+  );
+};
+
+interface ReceiptItem {
+  id: string;
+  nf_number?: string | null;
+  client_name?: string | null;
+  driver_name?: string | null;
+  receipt_image_url?: string | null;
+  delivered_at?: string | null;
+  scheduled_date?: string | null;
+  created_at: string;
+}
+
+const ReceiptsReportTab = () => {
+  const [items, setItems] = useState<ReceiptItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const { toast } = useToast();
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      try {
+        const response = await apiService.getCanhotos();
+        if (response.success && Array.isArray(response.data)) {
+          setItems(response.data as ReceiptItem[]);
+        } else {
+          toast({
+            title: 'Erro ao carregar comprovantes',
+            description: response.error || 'Não foi possível buscar os canhotos.',
+            variant: 'destructive',
+          });
+        }
+      } catch (error: any) {
+        toast({ title: 'Erro de Conexão', description: error.message, variant: 'destructive' });
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+  }, [toast]);
+
+  const filtered = useMemo(() => {
+    if (!searchTerm) return items;
+    const q = searchTerm.toLowerCase();
+    return items.filter(item =>
+      (item.nf_number || '').toLowerCase().includes(q) ||
+      (item.client_name || '').toLowerCase().includes(q) ||
+      (item.driver_name || '').toLowerCase().includes(q)
+    );
+  }, [items, searchTerm]);
+
+  const formatDate = (value?: string | null) => {
+    if (!value) return 'N/A';
+    return new Date(value).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  };
+
+  const exportToCSV = () => {
+    if (filtered.length === 0) {
+      toast({ title: 'Nenhum dado para exportar.' });
+      return;
+    }
+    const headers = ['NF', 'Cliente', 'Motorista', 'Data Entrega', 'Captura Canhoto', 'URL'];
+    const rows = [headers.join(',')];
+    filtered.forEach(item => {
+      rows.push([
+        `"${item.nf_number || ''}"`,
+        `"${(item.client_name || '').replace(/"/g, '""')}"`,
+        `"${(item.driver_name || '').replace(/"/g, '""')}"`,
+        `"${formatDate(item.delivered_at || item.scheduled_date)}"`,
+        `"${formatDate(item.created_at)}"`,
+        `"${item.receipt_image_url || ''}"`,
+      ].join(','));
+    });
+    const blob = new Blob([`﻿${rows.join('\n')}`], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `relatorio_canhotos_${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <FileText className="h-5 w-5" />
+          Comprovantes (Canhotos)
+        </CardTitle>
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-2 mt-4">
+          <div className="relative w-full sm:max-w-sm">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Buscar por NF, cliente, motorista..."
+              className="pl-8 w-full"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+          <Button variant="outline" onClick={exportToCSV} disabled={filtered.length === 0 || loading}>
+            <Download className="mr-2 h-4 w-4" />
+            Exportar CSV
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>NF</TableHead>
+                <TableHead>Cliente</TableHead>
+                <TableHead>Motorista</TableHead>
+                <TableHead>Data Entrega</TableHead>
+                <TableHead className="text-right">Canhoto</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {loading ? (
+                <TableRow><TableCell colSpan={5} className="h-24 text-center"><Loader2 className="h-6 w-6 animate-spin mx-auto" /></TableCell></TableRow>
+              ) : filtered.length > 0 ? (
+                filtered.map((item) => (
+                  <TableRow key={item.id}>
+                    <TableCell className="font-medium">{item.nf_number || 'N/A'}</TableCell>
+                    <TableCell>{item.client_name || 'N/A'}</TableCell>
+                    <TableCell>{item.driver_name || 'N/A'}</TableCell>
+                    <TableCell>{formatDate(item.delivered_at || item.scheduled_date || item.created_at)}</TableCell>
+                    <TableCell className="text-right">
+                      {item.receipt_image_url ? (
+                        <div className="flex justify-end gap-2">
+                          <Button size="sm" variant="outline" onClick={() => setPreviewUrl(item.receipt_image_url || null)}>
+                            <ImageIcon className="h-4 w-4 mr-1" /> Ver
+                          </Button>
+                          <a href={item.receipt_image_url} target="_blank" rel="noopener noreferrer">
+                            <Button size="sm" variant="default">Abrir</Button>
+                          </a>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">Sem canhoto</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))
+              ) : (
+                <TableRow><TableCell colSpan={5} className="h-24 text-center">Nenhum canhoto encontrado.</TableCell></TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+
+      <Dialog open={!!previewUrl} onOpenChange={(open) => !open && setPreviewUrl(null)}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Canhoto</DialogTitle>
+          </DialogHeader>
+          {previewUrl && (
+            <img src={previewUrl} alt="Canhoto" className="w-full h-auto rounded-md" />
+          )}
+        </DialogContent>
+      </Dialog>
+    </Card>
+  );
+};
+
+interface PerformanceItem {
+  driver_id: string;
+  driver_name: string;
+  total_deliveries: number;
+  completed_deliveries: number;
+  pending_deliveries: number;
+  in_progress_deliveries: number;
+  failed_deliveries: number;
+}
+
+const PerformanceReportTab = () => {
+  const [items, setItems] = useState<PerformanceItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const { toast } = useToast();
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      try {
+        const response = await apiService.getDriverPerformanceReports();
+        if (response.success && Array.isArray(response.data)) {
+          setItems(response.data as PerformanceItem[]);
+        } else {
+          toast({
+            title: 'Erro ao carregar desempenho',
+            description: response.error || 'Não foi possível buscar os dados.',
+            variant: 'destructive',
+          });
+        }
+      } catch (error: any) {
+        toast({ title: 'Erro de Conexão', description: error.message, variant: 'destructive' });
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+  }, [toast]);
+
+  const totals = useMemo(() => items.reduce(
+    (acc, item) => ({
+      total: acc.total + (item.total_deliveries || 0),
+      completed: acc.completed + (item.completed_deliveries || 0),
+      pending: acc.pending + (item.pending_deliveries || 0),
+      in_progress: acc.in_progress + (item.in_progress_deliveries || 0),
+      failed: acc.failed + (item.failed_deliveries || 0),
+    }),
+    { total: 0, completed: 0, pending: 0, in_progress: 0, failed: 0 }
+  ), [items]);
+
+  const successRate = totals.total > 0 ? Math.round((totals.completed / totals.total) * 100) : 0;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <BarChart3 className="h-5 w-5" />
+          Desempenho de Entregas
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <div className="rounded-md border p-3">
+            <p className="text-xs text-muted-foreground">Total</p>
+            <p className="text-2xl font-bold">{totals.total}</p>
+          </div>
+          <div className="rounded-md border p-3">
+            <p className="text-xs text-muted-foreground">Realizadas</p>
+            <p className="text-2xl font-bold text-green-500">{totals.completed}</p>
+          </div>
+          <div className="rounded-md border p-3">
+            <p className="text-xs text-muted-foreground">Em trânsito</p>
+            <p className="text-2xl font-bold text-yellow-500">{totals.in_progress}</p>
+          </div>
+          <div className="rounded-md border p-3">
+            <p className="text-xs text-muted-foreground">Pendentes</p>
+            <p className="text-2xl font-bold">{totals.pending}</p>
+          </div>
+          <div className="rounded-md border p-3">
+            <p className="text-xs text-muted-foreground">Taxa de sucesso</p>
+            <p className="text-2xl font-bold">{successRate}%</p>
+          </div>
+        </div>
+
+        <div className="rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Motorista</TableHead>
+                <TableHead className="text-right">Total</TableHead>
+                <TableHead className="text-right">Realizadas</TableHead>
+                <TableHead className="text-right">Em trânsito</TableHead>
+                <TableHead className="text-right">Pendentes</TableHead>
+                <TableHead className="text-right">Falhas</TableHead>
+                <TableHead className="text-right">Taxa</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {loading ? (
+                <TableRow><TableCell colSpan={7} className="h-24 text-center"><Loader2 className="h-6 w-6 animate-spin mx-auto" /></TableCell></TableRow>
+              ) : items.length > 0 ? (
+                items.map((item) => {
+                  const rate = item.total_deliveries > 0
+                    ? Math.round((item.completed_deliveries / item.total_deliveries) * 100)
+                    : 0;
+                  return (
+                    <TableRow key={item.driver_id}>
+                      <TableCell className="font-medium">{item.driver_name}</TableCell>
+                      <TableCell className="text-right">{item.total_deliveries}</TableCell>
+                      <TableCell className="text-right text-green-600">{item.completed_deliveries}</TableCell>
+                      <TableCell className="text-right text-yellow-600">{item.in_progress_deliveries}</TableCell>
+                      <TableCell className="text-right">{item.pending_deliveries}</TableCell>
+                      <TableCell className="text-right text-red-600">{item.failed_deliveries}</TableCell>
+                      <TableCell className="text-right">{rate}%</TableCell>
+                    </TableRow>
+                  );
+                })
+              ) : (
+                <TableRow><TableCell colSpan={7} className="h-24 text-center">Nenhum motorista encontrado.</TableCell></TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
 
 const Reports = () => {
   return (
     <main className="container mx-auto px-4 py-6 space-y-6">
       <h1 className="text-3xl font-bold tracking-tight">Relatórios</h1>
       <Tabs defaultValue="deliveries" className="w-full">
-        <TabsList className="grid w-full grid-cols-2 sm:grid-cols-3 md:grid-cols-5">
+        <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4">
           <TabsTrigger value="deliveries">Entregas</TabsTrigger>
           <TabsTrigger value="occurrences">Ocorrências</TabsTrigger>
           <TabsTrigger value="receipts">Comprovantes</TabsTrigger>
           <TabsTrigger value="performance">Desempenho</TabsTrigger>
-          <TabsTrigger value="client">Cliente</TabsTrigger>
         </TabsList>
         <TabsContent value="deliveries" className="mt-4"><DeliveriesReportTab /></TabsContent>
-        <TabsContent value="occurrences" className="mt-4"><PlaceholderTab title="Relatório de Ocorrências" /></TabsContent>
-        <TabsContent value="receipts" className="mt-4"><PlaceholderTab title="Relatório de Comprovantes" /></TabsContent>
-        <TabsContent value="performance" className="mt-4"><PlaceholderTab title="Relatório de Desempenho" /></TabsContent>
-        <TabsContent value="client" className="mt-4"><PlaceholderTab title="Relatório por Cliente" /></TabsContent>
+        <TabsContent value="occurrences" className="mt-4"><OccurrencesReportTab /></TabsContent>
+        <TabsContent value="receipts" className="mt-4"><ReceiptsReportTab /></TabsContent>
+        <TabsContent value="performance" className="mt-4"><PerformanceReportTab /></TabsContent>
       </Tabs>
     </main>
   );

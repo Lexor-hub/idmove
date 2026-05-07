@@ -12,6 +12,7 @@ import React, { Suspense } from "react";
 import Users from "./pages/dashboard/Users";
 import Vehicles from "./pages/dashboard/Vehicles";
 import { CreateDelivery } from "./pages/dashboard/CreateDelivery";
+import Deliveries from "./pages/dashboard/Deliveries";
 import { UserManagement } from "./pages/dashboard/UserManagement";
 // Lazy load the Tracking component to prevent potential module conflicts
 const Tracking = React.lazy(() => import("./pages/dashboard/Tracking"));
@@ -126,6 +127,16 @@ const AppRoutes = () => {
       />
       <Route
         path="/dashboard/entregas"
+        element={
+          <ProtectedRoute>
+            <DashboardLayout>
+              <Deliveries />
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/dashboard/entregas-do-dia"
         element={
           <ProtectedRoute>
             <DashboardLayout>
