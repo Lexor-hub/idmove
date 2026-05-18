@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { Camera, Upload, FileText, Eye, CheckCircle, Loader2, AlertCircle } from 'lucide-react';
+import { csvFilenameWithDate, downloadCsv, formatCsvDateTime } from '@/lib/csv';
 
 interface Receipt {
   id: string;
@@ -295,30 +296,24 @@ const Deliveries: React.FC = () => {
   const PAGE_SIZE = 10;
   const exportToCSV = (data: Receipt[], filename: string) => {
     if (!data.length) return;
-    const escapeCSV = (value: any): string => {
-      if (value === null || value === undefined) return '';
-      const str = String(value);
-      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-        return `"${str.replace(/"/g, '""')}"`;
-      }
-      return str;
-    };
-    const headers = ['NF', 'Cliente', 'Motorista', 'Status', 'Data'];
-    const rows = data.map((r) => [
-      r.nf_number || 'N/A',
-      r.client_name || 'N/A',
-      r.driver_name || 'N/A',
-      r.status || 'N/A',
-      new Date(r.created_at).toLocaleDateString('pt-BR'),
-    ].map(escapeCSV));
-    const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    window.URL.revokeObjectURL(url);
+    const headers = ['ID Canhoto', 'ID Entrega', 'NF', 'CNPJ', 'Cliente', 'Arquivo', 'Motorista', 'Status', 'Validado', 'Criado em', 'URL Canhoto'];
+    const rows = data.map((r) => {
+      const ocr = r.ocr_data as Record<string, unknown> | undefined;
+      return [
+        r.id,
+        r.delivery_id || '',
+        r.nf_number || ocr?.nf_number || '',
+        ocr?.cnpj || '',
+        r.client_name || ocr?.client_name || '',
+        r.filename || '',
+        r.driver_name || '',
+        r.status || '',
+        r.validated ? 'Sim' : 'Nao',
+        formatCsvDateTime(r.created_at),
+        r.image_url || r.receipt_image_url || '',
+      ];
+    });
+    downloadCsv(filename, headers, rows);
   };
   const [page, setPage] = useState(1);
   const paginatedReceipts = filteredReceipts.slice((page-1)*PAGE_SIZE, page*PAGE_SIZE);
@@ -637,7 +632,7 @@ const Deliveries: React.FC = () => {
           <CardHeader>
             <CardTitle>Lista de Canhotos</CardTitle>
             <div className="flex gap-2 mt-2">
-              <Button type="button" onClick={() => exportToCSV(filteredReceipts, 'canhotos.csv')} className="min-h-[44px] text-base">Exportar CSV</Button>
+              <Button type="button" onClick={() => exportToCSV(filteredReceipts, csvFilenameWithDate('canhotos'))} className="min-h-[44px] text-base">Exportar CSV</Button>
             </div>
           </CardHeader>
           <CardContent>

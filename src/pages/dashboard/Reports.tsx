@@ -10,6 +10,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { csvFilenameWithDate, downloadCsv, formatCsvDateTime } from '@/lib/csv';
 
 // CORREÇÃO: A interface foi ajustada para corresponder à resposta da API `getDeliveries`.
 interface DeliveryReportItem {
@@ -20,6 +21,10 @@ interface DeliveryReportItem {
   status: string;
   updated_at?: string; // Mantido como opcional, pois a ordenação o utiliza
   driver_name?: string;
+  scheduled_date?: string;
+  delivery_address?: string | null;
+  source_document_url?: string | null;
+  has_receipt?: boolean;
 }
 
 const DeliveriesReportTab = () => {
@@ -78,27 +83,21 @@ const DeliveriesReportTab = () => {
       toast({ title: "Nenhum dado para exportar." });
       return;
     }
-    const headers = ["NF", "Cliente", "Motorista", "Data Atualização", "Status"];
-    const csvRows = [headers.join(',')];
-    filteredDeliveries.forEach(d => {
-      const row = [
-        `"${d.nf_number || ''}"`,
-        `"${(d.client_name || '').replace(/"/g, '""')}"`,
-        `"${d.driver_name || 'N/A'}"`,
-        `"${new Date(d.updated_at).toLocaleString('pt-BR')}"`,
-        `"${d.status}"`
-      ];
-      csvRows.push(row.join(','));
-    });
-
-    const csvString = csvRows.join('\n');
-    const blob = new Blob([`\uFEFF${csvString}`], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `relatorio_entregas_${new Date().toISOString().split('T')[0]}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const headers = ['ID Entrega', 'NF', 'Cliente', 'Motorista', 'Data Criacao', 'Data Atualizacao', 'Data Agendada', 'Status', 'Endereco', 'Possui Canhoto', 'URL NF-e'];
+    const rows = filteredDeliveries.map((delivery) => [
+      delivery.id,
+      delivery.nf_number || '',
+      delivery.client_name || '',
+      delivery.driver_name || '',
+      formatCsvDateTime(delivery.created_at),
+      formatCsvDateTime(delivery.updated_at || delivery.created_at),
+      delivery.scheduled_date ? new Date(`${delivery.scheduled_date}T00:00:00`).toLocaleDateString('pt-BR') : '',
+      delivery.status || '',
+      delivery.delivery_address || '',
+      delivery.has_receipt ? 'Sim' : 'Nao',
+      delivery.source_document_url || '',
+    ]);
+    downloadCsv(csvFilenameWithDate('relatorio_entregas'), headers, rows);
   };
 
   const getStatusBadge = (status: string) => {
@@ -372,9 +371,13 @@ const OccurrencesReportTab = () => {
 
 interface ReceiptItem {
   id: string;
+  delivery_id?: string | null;
   nf_number?: string | null;
   client_name?: string | null;
   driver_name?: string | null;
+  filename?: string | null;
+  status?: string | null;
+  validated?: boolean;
   receipt_image_url?: string | null;
   delivered_at?: string | null;
   scheduled_date?: string | null;
@@ -431,25 +434,21 @@ const ReceiptsReportTab = () => {
       toast({ title: 'Nenhum dado para exportar.' });
       return;
     }
-    const headers = ['NF', 'Cliente', 'Motorista', 'Data Entrega', 'Captura Canhoto', 'URL'];
-    const rows = [headers.join(',')];
-    filtered.forEach(item => {
-      rows.push([
-        `"${item.nf_number || ''}"`,
-        `"${(item.client_name || '').replace(/"/g, '""')}"`,
-        `"${(item.driver_name || '').replace(/"/g, '""')}"`,
-        `"${formatDate(item.delivered_at || item.scheduled_date)}"`,
-        `"${formatDate(item.created_at)}"`,
-        `"${item.receipt_image_url || ''}"`,
-      ].join(','));
-    });
-    const blob = new Blob([`﻿${rows.join('\n')}`], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `relatorio_canhotos_${new Date().toISOString().split('T')[0]}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const headers = ['ID Canhoto', 'ID Entrega', 'NF', 'Cliente', 'Motorista', 'Arquivo', 'Status', 'Validado', 'Data Entrega', 'Captura Canhoto', 'URL Canhoto'];
+    const rows = filtered.map((item) => [
+      item.id,
+      item.delivery_id || '',
+      item.nf_number || '',
+      item.client_name || '',
+      item.driver_name || '',
+      item.filename || '',
+      item.status || '',
+      item.validated ? 'Sim' : 'Nao',
+      formatDate(item.delivered_at || item.scheduled_date),
+      formatDate(item.created_at),
+      item.receipt_image_url || '',
+    ]);
+    downloadCsv(csvFilenameWithDate('relatorio_canhotos'), headers, rows);
   };
 
   return (
@@ -531,6 +530,149 @@ const ReceiptsReportTab = () => {
           )}
         </DialogContent>
       </Dialog>
+    </Card>
+  );
+};
+
+interface NfeItem {
+  id: string;
+  nf_number?: string | null;
+  client_name?: string | null;
+  driver_name?: string | null;
+  status?: string | null;
+  created_at: string;
+  scheduled_date?: string | null;
+  delivery_address?: string | null;
+  source_document_url?: string | null;
+  has_receipt?: boolean;
+}
+
+const NfeReportTab = () => {
+  const [items, setItems] = useState<NfeItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
+  const { toast } = useToast();
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      try {
+        const response = await apiService.getDeliveries({});
+        if (response.success && Array.isArray(response.data)) {
+          setItems((response.data as NfeItem[]).filter((item) => Boolean(item.source_document_url)));
+        } else {
+          toast({
+            title: 'Erro ao carregar NF-es',
+            description: response.error || 'Nao foi possivel buscar os documentos.',
+            variant: 'destructive',
+          });
+        }
+      } catch (error: any) {
+        toast({ title: 'Erro de Conexao', description: error.message, variant: 'destructive' });
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+  }, [toast]);
+
+  const filtered = useMemo(() => {
+    if (!searchTerm) return items;
+    const query = searchTerm.toLowerCase();
+    return items.filter((item) =>
+      (item.nf_number || '').toLowerCase().includes(query) ||
+      (item.client_name || '').toLowerCase().includes(query) ||
+      (item.driver_name || '').toLowerCase().includes(query) ||
+      (item.delivery_address || '').toLowerCase().includes(query)
+    );
+  }, [items, searchTerm]);
+
+  const exportToCSV = () => {
+    if (filtered.length === 0) {
+      toast({ title: 'Nenhum dado para exportar.' });
+      return;
+    }
+    const headers = ['ID Entrega', 'NF', 'Cliente', 'Motorista', 'Status', 'Data Criacao', 'Data Agendada', 'Endereco', 'Possui Canhoto', 'URL NF-e'];
+    const rows = filtered.map((item) => [
+      item.id,
+      item.nf_number || '',
+      item.client_name || '',
+      item.driver_name || '',
+      item.status || '',
+      formatCsvDateTime(item.created_at),
+      item.scheduled_date ? new Date(`${item.scheduled_date}T00:00:00`).toLocaleDateString('pt-BR') : '',
+      item.delivery_address || '',
+      item.has_receipt ? 'Sim' : 'Nao',
+      item.source_document_url || '',
+    ]);
+    downloadCsv(csvFilenameWithDate('relatorio_nfes'), headers, rows);
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <FileText className="h-5 w-5" />
+          NF-es
+        </CardTitle>
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-2 mt-4">
+          <div className="relative w-full sm:max-w-sm">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Buscar por NF, cliente, motorista ou endereco..."
+              className="pl-8 w-full"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+          <Button variant="outline" onClick={exportToCSV} disabled={filtered.length === 0 || loading}>
+            <Download className="mr-2 h-4 w-4" />
+            Exportar CSV
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>NF</TableHead>
+                <TableHead>Cliente</TableHead>
+                <TableHead>Motorista</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Data</TableHead>
+                <TableHead className="text-right">Documento</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {loading ? (
+                <TableRow><TableCell colSpan={6} className="h-24 text-center"><Loader2 className="h-6 w-6 animate-spin mx-auto" /></TableCell></TableRow>
+              ) : filtered.length > 0 ? (
+                filtered.map((item) => (
+                  <TableRow key={item.id}>
+                    <TableCell className="font-medium">{item.nf_number || 'N/A'}</TableCell>
+                    <TableCell>{item.client_name || 'N/A'}</TableCell>
+                    <TableCell>{item.driver_name || 'N/A'}</TableCell>
+                    <TableCell>{item.status || 'N/A'}</TableCell>
+                    <TableCell>{new Date(item.created_at).toLocaleDateString('pt-BR')}</TableCell>
+                    <TableCell className="text-right">
+                      {item.source_document_url ? (
+                        <a href={item.source_document_url} target="_blank" rel="noopener noreferrer">
+                          <Button size="sm" variant="outline">Abrir NF-e</Button>
+                        </a>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">Sem documento</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))
+              ) : (
+                <TableRow><TableCell colSpan={6} className="h-24 text-center">Nenhuma NF-e encontrada.</TableCell></TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
     </Card>
   );
 };
@@ -667,13 +809,15 @@ const Reports = () => {
     <main className="container mx-auto px-4 py-6 space-y-6">
       <h1 className="text-3xl font-bold tracking-tight">Relatórios</h1>
       <Tabs defaultValue="deliveries" className="w-full">
-        <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4">
+        <TabsList className="grid w-full grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
           <TabsTrigger value="deliveries">Entregas</TabsTrigger>
+          <TabsTrigger value="nfes">NF-es</TabsTrigger>
           <TabsTrigger value="occurrences">Ocorrências</TabsTrigger>
           <TabsTrigger value="receipts">Comprovantes</TabsTrigger>
           <TabsTrigger value="performance">Desempenho</TabsTrigger>
         </TabsList>
         <TabsContent value="deliveries" className="mt-4"><DeliveriesReportTab /></TabsContent>
+        <TabsContent value="nfes" className="mt-4"><NfeReportTab /></TabsContent>
         <TabsContent value="occurrences" className="mt-4"><OccurrencesReportTab /></TabsContent>
         <TabsContent value="receipts" className="mt-4"><ReceiptsReportTab /></TabsContent>
         <TabsContent value="performance" className="mt-4"><PerformanceReportTab /></TabsContent>
