@@ -31,6 +31,27 @@ const SECTION_HEADERS = [
 
 const BR_STATES = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
 
+const DESTINATARIO_STOP_LABELS = [
+  'CNPJ',
+  'CPF',
+  'INSCRICAO',
+  'INSCRIÇÃO',
+  'DATA',
+  'ENDERE',
+  'BAIRRO',
+  'CEP',
+  'MUNIC',
+  'FONE',
+  'UF',
+  'PAGAMENTO',
+  'CALCULO',
+  'CÁLCULO',
+  'TRANSPORTADOR',
+  'DADOS',
+  'INFORMACOES',
+  'INFORMAÇÕES',
+];
+
 /**
  * Clean and format CNPJ string to XX.XXX.XXX/XXXX-XX
  */
@@ -99,8 +120,17 @@ function sliceUntilNextSection(text: string, fromIdx: number): string {
  * Skips the own company CNPJ that appears in the header area (remetente / transportadora).
  */
 function extractDestinatarioCNPJ(block: string): string {
+  const labelledMatch = block.match(/CNPJ\s*\/?\s*CPF\s*[:\-]?\s*([\d.\-/\s]{14,20})/i);
+  if (labelledMatch) {
+    const formatted = formatCNPJ(labelledMatch[1]);
+    if (isValidCNPJ(formatted) && !FIXED_CNPJ_DIGITS.has(formatted.replace(/\D/g, ''))) {
+      return formatted;
+    }
+  }
+
   const cnpjs = extractCNPJsFromBlock(block);
-  return cnpjs.length > 0 ? cnpjs[0] : '';
+  const nonFixed = cnpjs.filter((cnpj) => !FIXED_CNPJ_DIGITS.has(cnpj.replace(/\D/g, '')));
+  return nonFixed.length > 0 ? nonFixed[0] : '';
 }
 
 /**
@@ -108,6 +138,11 @@ function extractDestinatarioCNPJ(block: string): string {
  * Looks for the line after NOME / RAZÃO SOCIAL label or the first substantive line.
  */
 function extractDestinatarioName(block: string): string {
+  const collectedName = collectFieldValue(block, /NOME\s*[\/|1lI]?\s*RAZ[AÃA0]O\s*SOCIAL/i, DESTINATARIO_STOP_LABELS, 2);
+  if (collectedName && isLikelyCompanyName(collectedName)) {
+    return cleanName(collectedName);
+  }
+
   // Regex to find Name on the line below the label
   const match = block.match(/NOME\s*[\/|1lI]?\s*RAZ[AÃA0]O\s*SOCIAL\s*[\r\n]+([^\r\n]+)/i);
   if (match && isLikelyCompanyName(match[1])) {
@@ -153,8 +188,60 @@ function cleanName(name: string): string {
     .replace(/\s*(?:CNPJ|CPF)[:\s].*$/i, '') // remove inline CNPJ suffix
     .replace(/\s*\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}.*$/, '') // remove CNPJ digits
     .replace(/[_\-=]{2,}.*$/, '') // trailing separator
+    .replace(/\s+(?:BAIRRO|CEP|MUNIC[IÍ]PIO|UF)\b.*$/i, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
+}
+
+function normalizeLine(line: string): string {
+  return line.replace(/\s+/g, ' ').trim();
+}
+
+function splitMeaningfulLines(text: string): string[] {
+  return text
+    .split(/[\r\n]+/)
+    .map(normalizeLine)
+    .filter(Boolean);
+}
+
+function isStopLabelLine(line: string, stopLabels: string[]): boolean {
+  const normalized = normalizeLine(line).toUpperCase();
+  return stopLabels.some((label) => normalized.startsWith(label));
+}
+
+function isLikelyContinuationLine(line: string): boolean {
+  if (!line || isFieldLabel(line)) return false;
+  if (/^\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}$/.test(line)) return false;
+  return true;
+}
+
+function collectFieldValue(
+  block: string,
+  labelPattern: RegExp,
+  stopLabels: string[],
+  maxLines = 2
+): string {
+  const lines = splitMeaningfulLines(block);
+  const labelIndex = lines.findIndex((line) => labelPattern.test(line));
+  if (labelIndex === -1) return '';
+
+  const currentLine = lines[labelIndex];
+  let value = currentLine.replace(labelPattern, '').replace(/^[:\-\s]+/, '').trim();
+
+  const parts: string[] = [];
+  if (value && !isStopLabelLine(value, stopLabels)) {
+    parts.push(value);
+  }
+
+  for (let offset = 1; offset <= maxLines; offset++) {
+    const nextLine = lines[labelIndex + offset];
+    if (!nextLine) break;
+    if (isStopLabelLine(nextLine, stopLabels)) break;
+    if (!isLikelyContinuationLine(nextLine)) break;
+    parts.push(nextLine);
+  }
+
+  return normalizeLine(parts.join(' '));
 }
 
 interface AddressParts {
@@ -170,38 +257,29 @@ interface AddressParts {
  */
 function extractDestinatarioAddress(block: string): string {
   const parts: AddressParts = { street: '', neighborhood: '', city: '', uf: '', cep: '' };
-  
-  // Extract Street
-  const endMatch = block.match(/ENDERE[CÇ][O0]?\s*[\r\n]+([^\r\n]+)/i);
-  if (endMatch && !isFieldLabel(endMatch[1])) {
-      parts.street = endMatch[1].trim();
-  } else {
-      const endInline = block.match(/ENDERE[CÇ][O0]?\s*[:\-]*\s*([^\r\n]+)/i);
-      if (endInline && endInline[1].length > 3 && !isFieldLabel(endInline[1])) {
-          parts.street = endInline[1].trim();
-      }
-  }
-  
-  // Extract Neighborhood
-  const bairroMatch = block.match(/BAIRRO(?:[\s\/]*DISTRITO)?\s*[\r\n]+([^\r\n]+)/i);
-  if (bairroMatch && !isFieldLabel(bairroMatch[1])) {
-      parts.neighborhood = bairroMatch[1].trim();
-  } else {
-      const bairroInline = block.match(/BAIRRO(?:[\s\/]*DISTRITO)?\s*[:\-]*\s*([^\r\n]+)/i);
-      if (bairroInline && bairroInline[1].length > 2 && !isFieldLabel(bairroInline[1])) {
-          parts.neighborhood = bairroInline[1].trim();
-      }
-  }
-  
-  // Extract City
-  const munMatch = block.match(/MUNIC[IÍ1]PIO\s*[\r\n]+([^\r\n]+)/i);
-  if (munMatch && !isFieldLabel(munMatch[1])) {
-      parts.city = munMatch[1].replace(/\s+(AC|AL|AP|AM|BA|CE|DF|ES|GO|MA|MT|MS|MG|PA|PB|PR|PE|PI|RJ|RN|RS|RO|RR|SC|SP|SE|TO)\b.*/, '').trim();
-  } else {
-      const munInline = block.match(/MUNIC[IÍ1]PIO\s*[:\-]*\s*([^\r\n]+)/i);
-      if (munInline && munInline[1].length > 2 && !isFieldLabel(munInline[1])) {
-          parts.city = munInline[1].replace(/\s+(AC|AL|AP|AM|BA|CE|DF|ES|GO|MA|MT|MS|MG|PA|PB|PR|PE|PI|RJ|RN|RS|RO|RR|SC|SP|SE|TO)\b.*/, '').trim();
-      }
+
+  parts.street = collectFieldValue(
+    block,
+    /ENDERE[CÇ][O0]?/i,
+    ['BAIRRO', 'CEP', 'MUNIC', 'UF', 'FONE', 'INSCRICAO', 'INSCRIÇÃO'],
+    2
+  );
+
+  parts.neighborhood = collectFieldValue(
+    block,
+    /BAIRRO(?:[\s\/]*DISTRITO)?/i,
+    ['CEP', 'MUNIC', 'UF', 'FONE', 'INSCRICAO', 'INSCRIÇÃO'],
+    1
+  );
+
+  const cityValue = collectFieldValue(
+    block,
+    /MUNIC[IÍ1]PIO/i,
+    ['UF', 'FONE', 'CEP', 'INSCRICAO', 'INSCRIÇÃO'],
+    1
+  );
+  if (cityValue) {
+    parts.city = cityValue.replace(/\s+(AC|AL|AP|AM|BA|CE|DF|ES|GO|MA|MT|MS|MG|PA|PB|PR|PE|PI|RJ|RN|RS|RO|RR|SC|SP|SE|TO)\b.*/, '').trim();
   }
 
   // Extract CEP
@@ -269,7 +347,7 @@ function extractCNPJFallback(text: string): string {
  */
 function extractClientNameFallback(text: string): string {
   const patterns = [
-    /(?:Destinat[aá]rio|DESTINAT[AÁ]RIO)[\/\s]*(?:Remetente)?[^]*?(?:Nome|Raz[aã]o\s*Social|RAZAO\s*SOCIAL)\s*[:\s]*([^\n\r\d]{3,80})/gi,
+    /(?:Destinat[aá]rio|DESTINAT[AÁ]RIO)[\/\s]*(?:Remetente)?[^]*?(?:Nome|Raz[aã]o\s*Social|RAZAO\s*SOCIAL)\s*[:\s]*([^\n\r]{3,120})/gi,
     /(?:Raz[aã]o\s*Social|RAZAO\s*SOCIAL)\s*[:\s]*([^\n\r\d]{3,80})/gi,
     /(?:Nome\s*(?:do\s*)?(?:Cliente|Destinat[aá]rio))\s*[:\s]*([^\n\r\d]{3,80})/gi,
   ];

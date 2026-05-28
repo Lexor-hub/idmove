@@ -31,6 +31,7 @@ import {
 } from '@/components/ui/select';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Plus, Trash2, Edit2, AlertCircle } from 'lucide-react';
+import { isStrongPassword } from '@/lib/user-creation';
 
 type UserRole = 'ADMIN' | 'SUPERVISOR' | 'OPERATOR' | 'DRIVER' | 'CLIENT';
 
@@ -128,10 +129,8 @@ export const UserManagement: React.FC = () => {
       errors.email = 'Email inválido';
     }
 
-    if (!createForm.password) {
-      errors.password = 'Senha é obrigatória';
-    } else if (createForm.password.length < 8) {
-      errors.password = 'Senha deve ter no mínimo 8 caracteres';
+    if (!isStrongPassword(createForm.password)) {
+      errors.password = 'Senha deve ter no mínimo 8 caracteres, com maiúscula, minúscula e número';
     }
 
     if (!createForm.full_name.trim()) {

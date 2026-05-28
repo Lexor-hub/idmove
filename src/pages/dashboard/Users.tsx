@@ -22,6 +22,7 @@ import { apiService } from '@/services/api';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { User } from '@/types/auth';
+import { isStrongPassword } from '@/lib/user-creation';
 
 export const Users = () => {
   const { toast } = useToast();
@@ -146,11 +147,11 @@ export const Users = () => {
 
   const handleCreateUser = async () => {
     try {
-      // Validação básica da senha
-      if (!formData.password || formData.password.length < 6) {
+      // Validação alinhada com o backend de criação de usuário
+      if (!isStrongPassword(formData.password)) {
         toast({
           title: "Erro de Validação",
-          description: "A senha deve ter pelo menos 6 caracteres.",
+          description: "A senha deve ter pelo menos 8 caracteres, incluindo maiúscula, minúscula e número.",
           variant: "destructive",
         });
         return;

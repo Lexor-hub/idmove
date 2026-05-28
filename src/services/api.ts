@@ -3,6 +3,7 @@ import type { CompanyRow, DeliveryStatus, DriverStatus, ProfileRow } from '@/int
 import { buildRetryDeliveryPayload, getNextScheduledDate } from '@/lib/delivery-attempts';
 import { normalizeBrazilianDocument } from '@/lib/documents';
 import { normalizeRole } from '@/lib/roles';
+import { buildProfilePayload } from '@/lib/user-creation';
 
 export type ApiResponse<T> = { success: boolean; data?: T; error?: string };
 
@@ -90,6 +91,140 @@ const responseError = (error: unknown) => {
 const publicUrl = (bucket: string, path?: string | null) => {
   if (!path) return null;
   return supabase.storage.from(bucket).getPublicUrl(path).data.publicUrl;
+};
+
+const fileToBase64 = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve((reader.result as string).split(',')[1]);
+    reader.onerror = () => reject(new Error('Erro ao ler arquivo'));
+    reader.readAsDataURL(file);
+  });
+
+const loadImageFromFile = (file: File): Promise<HTMLImageElement> =>
+  new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Erro ao carregar imagem'));
+    };
+    image.src = url;
+  });
+
+const findBrightDocumentBounds = (
+  data: Uint8ClampedArray,
+  width: number,
+  height: number
+) => {
+  let minX = width;
+  let minY = height;
+  let maxX = 0;
+  let maxY = 0;
+  let hits = 0;
+
+  for (let y = 0; y < height; y += 2) {
+    for (let x = 0; x < width; x += 2) {
+      const idx = (y * width + x) * 4;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      const brightness = (r + g + b) / 3;
+      const spread = Math.max(r, g, b) - Math.min(r, g, b);
+
+      if (brightness > 185 && spread < 70) {
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+        hits++;
+      }
+    }
+  }
+
+  if (hits < 100) return null;
+
+  const boundsWidth = maxX - minX;
+  const boundsHeight = maxY - minY;
+  const coversEnough = boundsWidth * boundsHeight > width * height * 0.25;
+  if (!coversEnough) return null;
+
+  const pad = Math.round(Math.min(width, height) * 0.015);
+  return {
+    x: Math.max(0, minX - pad),
+    y: Math.max(0, minY - pad),
+    width: Math.min(width, maxX - minX + pad * 2),
+    height: Math.min(height, maxY - minY + pad * 2),
+  };
+};
+
+const prepareNfeImageForExtraction = async (file: File) => {
+  try {
+    const image = await loadImageFromFile(file);
+    const sourceWidth = image.naturalWidth || image.width;
+    const sourceHeight = image.naturalHeight || image.height;
+    const probeCanvas = document.createElement('canvas');
+    probeCanvas.width = sourceWidth;
+    probeCanvas.height = sourceHeight;
+
+    const probeCtx = probeCanvas.getContext('2d', { willReadFrequently: true });
+    if (!probeCtx) return { base64: await fileToBase64(file), contentType: file.type };
+
+    probeCtx.drawImage(image, 0, 0);
+    const imageData = probeCtx.getImageData(0, 0, sourceWidth, sourceHeight);
+    const bounds = findBrightDocumentBounds(imageData.data, sourceWidth, sourceHeight) || {
+      x: 0,
+      y: 0,
+      width: sourceWidth,
+      height: sourceHeight,
+    };
+
+    const maxDimension = 2200;
+    const scale = Math.min(maxDimension / Math.max(bounds.width, bounds.height), 2);
+    const outputWidth = Math.max(1, Math.round(bounds.width * scale));
+    const outputHeight = Math.max(1, Math.round(bounds.height * scale));
+
+    const outputCanvas = document.createElement('canvas');
+    outputCanvas.width = outputWidth;
+    outputCanvas.height = outputHeight;
+    const outputCtx = outputCanvas.getContext('2d');
+    if (!outputCtx) return { base64: await fileToBase64(file), contentType: file.type };
+
+    outputCtx.imageSmoothingEnabled = true;
+    outputCtx.imageSmoothingQuality = 'high';
+    outputCtx.drawImage(
+      image,
+      bounds.x,
+      bounds.y,
+      bounds.width,
+      bounds.height,
+      0,
+      0,
+      outputWidth,
+      outputHeight
+    );
+
+    const dataUrl = outputCanvas.toDataURL('image/jpeg', 0.92);
+    return { base64: dataUrl.split(',')[1], contentType: 'image/jpeg' };
+  } catch {
+    return { base64: await fileToBase64(file), contentType: file.type };
+  }
+};
+
+const shouldFallbackToSignup = (error: unknown) => {
+  const message = responseError(error).toLowerCase();
+  return (
+    message.includes('failed to fetch') ||
+    message.includes('fetch failed') ||
+    message.includes('network error') ||
+    message.includes('request failed') ||
+    message.includes('could not find the function') ||
+    message.includes('function public.create_managed_user does not exist')
+  );
 };
 
 class ApiService {
@@ -259,6 +394,148 @@ class ApiService {
     return { path, url: publicUrl(bucket, path) };
   }
 
+  private async restoreSession(session: { access_token: string; refresh_token: string } | null) {
+    if (!session) return;
+    const { error } = await supabase.auth.setSession({
+      access_token: session.access_token,
+      refresh_token: session.refresh_token,
+    });
+    if (error) throw error;
+  }
+
+  private async createUserViaSignup(params: {
+    payload: Record<string, any>;
+    role: ReturnType<typeof normalizeRole>;
+    companyId: string | null;
+    fullName: string;
+    document: string | null;
+  }) {
+    const { payload, role, companyId, fullName, document } = params;
+    const email = String(payload.email || '').trim().toLowerCase();
+    const username = String(payload.username || email).trim();
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const adminSession = sessionData.session
+      ? {
+          access_token: sessionData.session.access_token,
+          refresh_token: sessionData.session.refresh_token,
+        }
+      : null;
+
+    const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+      email,
+      password: payload.password,
+      options: {
+        data: {
+          full_name: fullName,
+          role,
+        },
+      },
+    });
+
+    if (signUpError) throw signUpError;
+
+    const authUserId = signUpData.user?.id;
+    if (!authUserId) {
+      throw new Error('Nao foi possivel criar o usuario no Auth.');
+    }
+
+    await this.restoreSession(adminSession);
+
+    try {
+      const { data: profile, error: profileError } = await supabase
+        .from('profiles')
+        .insert(
+          buildProfilePayload({
+            authUserId,
+            companyId,
+            email,
+            fullName,
+            role,
+            username,
+            document,
+            status: payload.status || 'ATIVO',
+            isActive: payload.status ? String(payload.status).toUpperCase() === 'ATIVO' : true,
+          })
+        )
+        .select('*')
+        .single();
+      if (profileError) throw profileError;
+
+      let driverId: string | null = null;
+      let clientId: string | null = null;
+
+      if (role === 'DRIVER') {
+        const { data: driver, error: driverError } = await supabase
+          .from('drivers')
+          .insert({
+            company_id: companyId,
+            profile_id: profile.id,
+            name: fullName,
+            cpf: document,
+            status: payload.status || 'ATIVO',
+          })
+          .select('id')
+          .single();
+        if (driverError) throw driverError;
+        driverId = driver?.id || null;
+      }
+
+      if (role === 'CLIENT') {
+        const { data: client, error: clientError } = await supabase
+          .from('clients')
+          .insert({
+            company_id: companyId,
+            profile_id: profile.id,
+            name: fullName,
+            email,
+            document,
+          })
+          .select('id')
+          .single();
+        if (clientError) throw clientError;
+        clientId = client?.id || null;
+      }
+
+      let userCompany: CompanyRow | null = null;
+      if (companyId) {
+        const { data: fetchedCompany } = await supabase
+          .from('companies')
+          .select('*')
+          .eq('id', companyId)
+          .maybeSingle();
+        userCompany = fetchedCompany as CompanyRow | null;
+      }
+
+      return {
+        id: profile.id,
+        user_id: profile.auth_user_id || authUserId,
+        username: profile.username,
+        email: profile.email,
+        full_name: profile.full_name,
+        name: profile.full_name,
+        role: profile.role,
+        user_type: profile.role,
+        cpf: profile.cpf || undefined,
+        status: profile.status,
+        is_active: profile.is_active,
+        company_id: profile.company_id || undefined,
+        company_name: userCompany?.name,
+        company_domain: userCompany?.domain || undefined,
+        driver_id: driverId || undefined,
+        client_id: clientId || undefined,
+      };
+    } catch (error) {
+      try {
+        await supabase.rpc('delete_auth_user', { target_auth_user_id: authUserId });
+      } catch (cleanupError) {
+        console.warn('Cleanup do usuario criado parcialmente falhou.', cleanupError);
+      }
+      await this.restoreSession(adminSession);
+      throw error;
+    }
+  }
+
   async login(credentials: { username: string; password: string }) {
     return this.run(async () => {
       const email = credentials.username.trim();
@@ -387,49 +664,73 @@ class ApiService {
       const companyId = payload.company_id || context.profile.company_id;
       const fullName = payload.full_name || payload.name || payload.username || payload.email;
       const document = normalizeBrazilianDocument(payload.cpf || payload.document);
+      const payloadEmail = String(payload.email || '').trim().toLowerCase();
 
-      const { data, error } = await supabase.rpc('create_managed_user', {
-        p_email:      payload.email,
-        p_password:   payload.password,
-        p_full_name:  fullName,
-        p_role:       role,
-        p_company_id: companyId,
-        p_username:   payload.username || payload.email,
-        p_cpf:        document || null,
-        p_status:     payload.status || 'ATIVO',
-      });
-      if (error) throw error;
-
-      const result = data as Record<string, any>;
-
-      let userCompany = context.company;
-      if (companyId && (!userCompany || userCompany.id !== companyId)) {
-        const { data: fetchedCompany } = await supabase
-          .from('companies')
-          .select('*')
-          .eq('id', String(companyId))
-          .maybeSingle();
-        userCompany = fetchedCompany as CompanyRow | null;
+      if (role !== 'MASTER' && !companyId) {
+        throw new Error('Usuario sem empresa vinculada.');
       }
 
-      return {
-        id: result.id,
-        user_id: result.auth_user_id || result.id,
-        username: result.username,
-        email: result.email,
-        full_name: result.full_name,
-        name: result.full_name,
-        role: result.role,
-        user_type: result.role,
-        cpf: document || undefined,
-        status: result.status,
-        is_active: result.is_active,
-        company_id: companyId || undefined,
-        company_name: userCompany?.name,
-        company_domain: userCompany?.domain || undefined,
-        driver_id: result.driver_id || undefined,
-        client_id: result.client_id || undefined,
+      const tryRpc = async () => {
+        const { data, error } = await supabase.rpc('create_managed_user', {
+          p_email: payloadEmail,
+          p_password: payload.password,
+          p_full_name: fullName,
+          p_role: role,
+          p_company_id: companyId,
+          p_username: payload.username || payload.email,
+          p_cpf: document || null,
+          p_status: payload.status || 'ATIVO',
+        });
+        if (error) throw error;
+
+        const result = data as Record<string, any>;
+
+        let userCompany = context.company;
+        if (companyId && (!userCompany || userCompany.id !== companyId)) {
+          const { data: fetchedCompany } = await supabase
+            .from('companies')
+            .select('*')
+            .eq('id', String(companyId))
+            .maybeSingle();
+          userCompany = fetchedCompany as CompanyRow | null;
+        }
+
+        return {
+          id: result.id,
+          user_id: result.auth_user_id || result.id,
+          username: result.username,
+          email: result.email,
+          full_name: result.full_name,
+          name: result.full_name,
+          role: result.role,
+          user_type: result.role,
+          cpf: document || undefined,
+          status: result.status,
+          is_active: result.is_active,
+          company_id: companyId || undefined,
+          company_name: userCompany?.name,
+          company_domain: userCompany?.domain || undefined,
+          driver_id: result.driver_id || undefined,
+          client_id: result.client_id || undefined,
+        };
       };
+
+      try {
+        return await tryRpc();
+      } catch (error) {
+        if (!shouldFallbackToSignup(error)) {
+          throw error;
+        }
+
+        console.warn('create_managed_user RPC falhou; usando fallback via auth.signUp.', error);
+        return await this.createUserViaSignup({
+          payload,
+          role,
+          companyId: companyId || null,
+          fullName,
+          document,
+        });
+      }
     });
   }
 
@@ -988,12 +1289,21 @@ class ApiService {
         .single();
       if (error) throw error;
 
-      await supabase
+      // CRÍTICO: verificar se o UPDATE foi aplicado. Sem .select() o Supabase não
+      // retorna erro quando RLS bloqueia silenciosamente — usamos .select() para confirmar.
+      const { data: updatedDelivery, error: updateError } = await supabase
         .from('deliveries')
         .update({ status: 'DELIVERED', delivered_at: new Date().toISOString() })
-        .eq('id', deliveryId);
+        .eq('id', deliveryId)
+        .select('id, status')
+        .single();
 
-      return { ...data, receipt_image_url: upload.url, image_url: upload.url };
+      if (updateError) {
+        console.error('[uploadReceipt] Falha ao atualizar status da entrega para DELIVERED:', updateError);
+        throw new Error('Canhoto salvo, mas não foi possível finalizar a entrega. Tente novamente ou contate o suporte.');
+      }
+
+      return { ...data, receipt_image_url: upload.url, image_url: upload.url, delivery_status: updatedDelivery?.status };
     });
   }
 
@@ -1267,15 +1577,10 @@ class ApiService {
 
   async extractNfeWithGemini(file: File): Promise<ApiResponse<ExtractedNfeData>> {
     return this.run(async () => {
-      const base64 = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve((reader.result as string).split(',')[1]);
-        reader.onerror = () => reject(new Error('Erro ao ler arquivo'));
-        reader.readAsDataURL(file);
-      });
+      const preparedImage = await prepareNfeImageForExtraction(file);
 
       const { data, error } = await supabase.functions.invoke('extract-nfe-gemini', {
-        body: { image_base64: base64, content_type: file.type },
+        body: { image_base64: preparedImage.base64, content_type: preparedImage.contentType },
       });
 
       if (error) {

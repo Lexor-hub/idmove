@@ -10,7 +10,9 @@ import { useAuth } from '@/contexts/AuthContext';
 import { processImageOCR } from '@/services/ocrService';
 import {
   FIXED_NFE_EMITENTE_CNPJ,
+  FIXED_NFE_EMITENTE_NAME,
   FIXED_NFE_TRANSPORTADORA_CNPJ,
+  FIXED_NFE_TRANSPORTADORA_NAME,
 } from '@/lib/nfeDefaults';
 import {
   Upload,
@@ -442,13 +444,15 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
                   <Building2 className="h-3.5 w-3.5 text-gray-400" />
                   <span className="text-xs text-gray-500">Remetente</span>
                 </div>
-                <Input
-                  value={cnpjEmitente}
-                  placeholder="00.000.000/0000-00"
-                  className="h-7 text-xs border-0 shadow-none focus-visible:ring-0 p-0"
-                  disabled
-                  readOnly
-                />
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-medium text-gray-800 truncate">{FIXED_NFE_EMITENTE_NAME}</p>
+                  <Input
+                    value={cnpjEmitente}
+                    placeholder="00.000.000/0000-00"
+                    className="h-6 text-xs border-0 shadow-none focus-visible:ring-0 p-0 bg-transparent text-gray-700 opacity-100"
+                    readOnly
+                  />
+                </div>
               </div>
 
               {/* Destinatário / Cliente */}
@@ -471,13 +475,15 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
                   <Truck className="h-3.5 w-3.5 text-gray-400" />
                   <span className="text-xs text-gray-500">Transportadora</span>
                 </div>
-                <Input
-                  value={cnpjTransportadora}
-                  placeholder="00.000.000/0000-00"
-                  className="h-7 text-xs border-0 shadow-none focus-visible:ring-0 p-0"
-                  disabled
-                  readOnly
-                />
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-medium text-gray-800 truncate">{FIXED_NFE_TRANSPORTADORA_NAME}</p>
+                  <Input
+                    value={cnpjTransportadora}
+                    placeholder="00.000.000/0000-00"
+                    className="h-6 text-xs border-0 shadow-none focus-visible:ring-0 p-0 bg-transparent text-gray-700 opacity-100"
+                    readOnly
+                  />
+                </div>
               </div>
             </div>
           </div>

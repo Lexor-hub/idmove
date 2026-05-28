@@ -5,6 +5,11 @@ const normalizeDocument = (value?: string | null) => {
   return digits || null;
 };
 
+export const isStrongPassword = (password?: string | null) => {
+  if (!password || password.length < 8) return false;
+  return /[A-Z]/.test(password) && /[a-z]/.test(password) && /[0-9]/.test(password);
+};
+
 type BuildProfilePayloadInput = {
   authUserId: string;
   companyId?: string | null;
