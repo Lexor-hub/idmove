@@ -20,6 +20,13 @@ import {
 } from 'lucide-react';
 import { apiService } from '@/services/api';
 import { useAuth } from '@/contexts/AuthContext';
+import { processImageOCR } from '@/services/ocrService';
+import {
+  FIXED_NFE_EMITENTE_CNPJ,
+  FIXED_NFE_EMITENTE_NAME,
+  FIXED_NFE_TRANSPORTADORA_CNPJ,
+  FIXED_NFE_TRANSPORTADORA_NAME,
+} from '@/lib/nfeDefaults';
 
 // ##########################################################################
 // ########### NOVAS INTERFACES UNIFICADAS (COPIADAS DA SUA ï¿½LTIMA MENSAGEM)
@@ -206,7 +213,6 @@ type DocumentAIParsedPayload = {
   detail?: DocumentAIParsedPayload;
 };
 
-// ## Funï¿½ï¿½es Auxiliares
 const createEmptyStructuredData = (): StructuredInvoiceData => ({
   nf_data: {
     numero: '',
@@ -217,8 +223,8 @@ const createEmptyStructuredData = (): StructuredInvoiceData => ({
     protocolo_autorizacao: ''
   },
   remetente: {
-    razao_social: '',
-    cnpj_cpf: '',
+    razao_social: FIXED_NFE_EMITENTE_NAME,
+    cnpj_cpf: FIXED_NFE_EMITENTE_CNPJ,
     endereco: '',
     municipio: '',
     uf: '',
@@ -248,8 +254,8 @@ const createEmptyStructuredData = (): StructuredInvoiceData => ({
     valor_total_tributos: ''
   },
   transportadora: {
-    razao_social: '',
-    cnpj_cpf: '',
+    razao_social: FIXED_NFE_TRANSPORTADORA_NAME,
+    cnpj_cpf: FIXED_NFE_TRANSPORTADORA_CNPJ,
     endereco: '',
     municipio: '',
     uf: '',
@@ -458,6 +464,11 @@ const buildInitialState = (initialData?: DeliveryUploadInitialData): StructuredI
   base.nf_data.serie = initialData.serie || base.nf_data.serie;
   base.nf_data.chave = initialData.chave || base.nf_data.chave;
   base.valores.valor_frete = initialData.freight_amount || base.valores.valor_frete;
+
+  base.remetente.razao_social = FIXED_NFE_EMITENTE_NAME;
+  base.remetente.cnpj_cpf = FIXED_NFE_EMITENTE_CNPJ;
+  base.transportadora.razao_social = FIXED_NFE_TRANSPORTADORA_NAME;
+  base.transportadora.cnpj_cpf = FIXED_NFE_TRANSPORTADORA_CNPJ;
 
   return base;
 };
@@ -679,36 +690,35 @@ const extractFieldsFromRawText = (text: string): Record<string, string> => {
     return match && match[1] ? clean(match[1]) : '';
   };
 
-  // Mapeamento corrigido com base nos rï¿½tulos fornecidos
-  extracted.nf_numero = find(/N[rï¿½o]\.?\s*[:\-\s]*(\d+)/i);
-  extracted.nf_serie = find(/S[eï¿½]rie[:\-\s]*(\d+)/i);
+  extracted.nf_numero = find(/N[rºo]\.?\s*[:\-\s]*(\d+)/i);
+  extracted.nf_serie = find(/S[eé]rie[:\-\s]*(\d+)/i);
   extracted.chave_acesso = find(/Chave de Acesso\s*([\d\s]{44})/i);
-  extracted.data_emissao = find(/Data de Emiss[ï¿½a]o\s*(\d{2}\/\d{2}\/\d{4})/i);
-  extracted.data_saida = find(/Dt\. Sa[ï¿½i]da\/Entrada\s*(\d{2}\/\d{2}\/\d{4})/i);
-  extracted.protocolo_autorizacao = find(/Protocolo de autoriza[ï¿½c][ï¿½a]o de uso\s*(\d+)/i);
-  
+  extracted.data_emissao = find(/Data de Emiss[ãa]o\s*(\d{2}\/\d{2}\/\d{4})/i);
+  extracted.data_saida = find(/Dt\. Sa[íi]da\/Entrada\s*(\d{2}\/\d{2}\/\d{4})/i);
+  extracted.protocolo_autorizacao = find(/Protocolo de autoriza[çc][ãa]o de uso\s*(\d+)/i);
+
   // Remetente
-  extracted.remetente_razao_social = find(/Raz[ï¿½a]o Social\s*([^\n\r]+)/i);
+  extracted.remetente_razao_social = find(/Raz[ãa]o Social\s*([^\n\r]+)/i);
   extracted.remetente_cnpj = digits(find(/CNPJ\s*([\d.\-/\s]{14,})/i));
-  extracted.remetente_endereco = find(/Remetente\s*Endere[ï¿½c]o\s*([^\n\r]+)/i);
-  extracted.remetente_municipio = find(/Remetente\s*Munic[ï¿½i]pio\s*([^\n\r]+)/i);
+  extracted.remetente_endereco = find(/Remetente\s*Endere[çc]o\s*([^\n\r]+)/i);
+  extracted.remetente_municipio = find(/Remetente\s*Munic[íi]pio\s*([^\n\r]+)/i);
   extracted.remetente_uf = find(/Remetente\s*UF\s*([A-Z]{2})/i);
   extracted.remetente_cep = find(/Remetente\s*CEP\s*([\d]{5}\-?[\d]{3})/i);
   extracted.remetente_telefone = find(/Remetente\s*Fone[:\-\s]*([\d\s\-\(\)]+)/i);
 
-  // Destinatï¿½rio
-  extracted.destinatario_razao_social = find(/Destinat[ï¿½a]rio \/ Remetente\s*Nome \/ Raz[ï¿½a]o Social\s*([^\n\r]+)/i);
-  extracted.destinatario_cnpj = digits(find(/Destinat[ï¿½a]rio \/ Remetente\s*CNPJ\/CPF\s*([\d.\-/\s]{14,})/i));
-  extracted.destinatario_endereco = find(/Destinat[ï¿½a]rio \/ Remetente\s*Endere[ï¿½c]o\s*([^\n\r]+)/i);
-  extracted.destinatario_municipio = find(/Destinat[ï¿½a]rio \/ Remetente\s*Munic[ï¿½i]pio\s*([^\n\r]+)/i);
-  extracted.destinatario_uf = find(/Destinat[ï¿½a]rio \/ Remetente\s*UF\s*([A-Z]{2})/i);
-  extracted.destinatario_cep = find(/Destinat[ï¿½a]rio \/ Remetente\s*CEP\s*([\d]{5}\-?[\d]{3})/i);
-  extracted.destinatario_telefone = find(/Destinat[ï¿½a]rio \/ Remetente\s*Fone\/Fax\s*([\d\s\-\(\)]+)/i);
-  
+  // Destinatário
+  extracted.destinatario_razao_social = find(/Destinat[áa]rio \/ Remetente\s*Nome \/ Raz[ãa]o Social\s*([^\n\r]+)/i);
+  extracted.destinatario_cnpj = digits(find(/Destinat[áa]rio \/ Remetente\s*CNPJ\/CPF\s*([\d.\-/\s]{14,})/i));
+  extracted.destinatario_endereco = find(/Destinat[áa]rio \/ Remetente\s*Endere[çc]o\s*([^\n\r]+)/i);
+  extracted.destinatario_municipio = find(/Destinat[áa]rio \/ Remetente\s*Munic[íi]pio\s*([^\n\r]+)/i);
+  extracted.destinatario_uf = find(/Destinat[áa]rio \/ Remetente\s*UF\s*([A-Z]{2})/i);
+  extracted.destinatario_cep = find(/Destinat[áa]rio \/ Remetente\s*CEP\s*([\d]{5}\-?[\d]{3})/i);
+  extracted.destinatario_telefone = find(/Destinat[áa]rio \/ Remetente\s*Fone\/Fax\s*([\d\s\-\(\)]+)/i);
+
   extracted.total_nota = find(/Valor Total da Nota\s*([\d.,]+)/i);
   extracted.valor_frete = find(/Valor do Frete\s*([\d.,]+)/i);
   extracted.peso_bruto = find(/Peso Bruto\s*([\d.,]+)/i);
-  extracted.peso_liquido = find(/Peso Lï¿½quido\s*([\d.,]+)/i);
+  extracted.peso_liquido = find(/Peso L[íi]quido\s*([\d.,]+)/i);
   extracted.volumes_quantidade = find(/Quantidade de Volume\(s\)\s*([\d\.,]+)/i);
 
   return extracted;
@@ -786,43 +796,86 @@ const handleDocumentAIData = (input: DocumentAIParsedPayload) => {
 };
 
   const processDocumentWithAI = async (file: File) => {
+    const SUPPORTED_VISION_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    const isVisionSupported = SUPPORTED_VISION_TYPES.includes(file.type);
+
+    if (!isVisionSupported) {
+      setIsSefazValid(false);
+      setStep('form');
+      const isHeic = file.type === 'image/heic' || file.type === 'image/heif';
+      toast({
+        title: isHeic ? 'Formato HEIC não suportado para leitura automática' : 'Documento carregado',
+        description: isHeic
+          ? 'Converta a foto para JPG nas configurações do iPhone (Ajustes > Câmera > Formatos > Compatível) ou preencha manualmente.'
+          : 'Preencha os dados manualmente. A leitura automática suporta imagens JPG, PNG e WEBP.',
+        variant: isHeic ? 'destructive' : 'default'
+      });
+      return;
+    }
+
     try {
       setLoading(true);
-      const response = await apiService.smartProcessDocument(file);
-      console.log('Resposta completa do Document AI:', response);
+      const response = await apiService.extractNfeWithGemini(file);
 
-      if (response.success && response.data) {
-        const { extractedData, entities, rawText, rawFields, confidence } = response.data;
-        handleDocumentAIData({
-          extractedData,
-          entities: Array.isArray(entities) ? entities : (entities ? [entities] : []),
-          rawText,
-          rawFields: rawFields || {},
-          confidence: typeof confidence === 'number' ? confidence : undefined
-        });
+      if (!response.success || !response.data) {
+        throw new Error(response.error || 'Não foi possível ler a NF-e pela IA.');
+      }
+
+      const nfe = response.data;
+      const newData = createEmptyStructuredData();
+
+      newData.nf_data.numero = nfe.numero_nfe || '';
+      newData.remetente.razao_social = FIXED_NFE_EMITENTE_NAME;
+      newData.remetente.cnpj_cpf = FIXED_NFE_EMITENTE_CNPJ;
+      newData.destinatario.razao_social = nfe.nome_destinatario || '';
+      newData.destinatario.cnpj_cpf = formatTaxId(nfe.cnpj_destinatario || '');
+      newData.destinatario.endereco = nfe.endereco_destinatario || '';
+      newData.transportadora.razao_social = FIXED_NFE_TRANSPORTADORA_NAME;
+      newData.transportadora.cnpj_cpf = FIXED_NFE_TRANSPORTADORA_CNPJ;
+
+      setStructuredData(newData);
+      setIsSefazValid(true);
+      setIsEditing(true);
+      setStep('form');
+
+      toast({
+        title: 'NF-e lida com sucesso',
+        description: 'Dados extraídos automaticamente. Verifique e complete se necessário.'
+      });
+    } catch (error) {
+      console.error('Erro ao processar documento:', error);
+
+      try {
+        const fallback = await processImageOCR(file);
+        const newData = createEmptyStructuredData();
+
+        newData.nf_data.numero = fallback.nfNumber || '';
+        newData.remetente.razao_social = FIXED_NFE_EMITENTE_NAME;
+        newData.remetente.cnpj_cpf = FIXED_NFE_EMITENTE_CNPJ;
+        newData.destinatario.razao_social = fallback.clientName || '';
+        newData.destinatario.cnpj_cpf = formatTaxId(fallback.cnpj || '');
+        newData.destinatario.endereco = fallback.address || '';
+        newData.transportadora.razao_social = FIXED_NFE_TRANSPORTADORA_NAME;
+        newData.transportadora.cnpj_cpf = FIXED_NFE_TRANSPORTADORA_CNPJ;
+
+        setStructuredData(newData);
+        setIsSefazValid(true);
+        setIsEditing(true);
+        setStep('form');
 
         toast({
-          title: 'Documento processado com sucesso',
-          description: 'Os dados foram extraÃ­dos automaticamente. Verifique e ajuste se necessÃ¡rio.'
+          title: 'NF-e lida com fallback local',
+          description: 'Leitura por IA indisponível; OCR local aplicado. Revise os dados antes de salvar.'
         });
-      } else {
+      } catch (fallbackError) {
         setIsSefazValid(false);
         toast({
           title: 'Erro ao processar documento',
-          
+          description: error instanceof Error ? error.message : 'Preencha os dados manualmente.',
           variant: 'destructive'
         });
-        setStep('form'); // Mantenha no formulÃ¡rio para preenchimento manual
+        setStep('form');
       }
-    } catch (error) {
-      setIsSefazValid(false);
-      console.error('Erro ao processar documento com Document AI:', error);
-      toast({
-        title: 'Erro ao processar documento',
-        description: 'Ocorreu um erro ao enviar o documento para anÃ¡lise.',
-        variant: 'destructive'
-      });
-      setStep('form'); // Mantenha no formulÃ¡rio para preenchimento manual
     } finally {
       setLoading(false);
     }
@@ -1099,8 +1152,10 @@ const handleSaveDelivery = async () => {
       return;
     }
 
-    // Usa driver_id do backend quando o usuario autenticado for motorista.
-    const fallbackDriverUserId = user?.id ? String(user.id) : (user?.user_id ? String(user.user_id) : undefined);
+    // Bug 6 fix: usar driver_id (FK da tabela drivers), não user.id (profile ID)
+    const fallbackDriverUserId = user?.driver_id
+      ? String(user.driver_id)
+      : (user?.id ? String(user.id) : undefined);
 
     let driverIdForPayload: string | undefined;
 
@@ -1132,11 +1187,10 @@ const handleSaveDelivery = async () => {
         weight: structuredData.volumes.peso_bruto,
     };
     
-    // Garante que um arquivo foi selecionado antes do envio
     if (!uploadedFile) {
       toast({
-        title: 'Documento obrigatÃ³rio',
-        description: 'Selecione um XML ou PDF da NF antes de salvar a entrega.',
+        title: 'Documento obrigatório',
+        description: 'Selecione ou fotografe o documento da NF antes de salvar.',
         variant: 'destructive'
       });
       setLoading(false);
@@ -1150,12 +1204,11 @@ const handleSaveDelivery = async () => {
         isSefazValid,
         driver_id: driverIdForPayload,
         client_id: selectedClientId,
-        // Em modo driver, setar status automaticamente para ASSIGNED
+        // Bug 5 fix: enviar client_cnpj no raiz para auto-match por CNPJ em createDelivery
+        client_cnpj: structuredData.destinatario.cnpj_cpf || undefined,
         status: mode === 'driver' ? 'ASSIGNED' : undefined,
         file: uploadedFile,
     };
-
-    console.log("Payload a ser enviado para a API:", payload);
 
     const response = await apiService.createDelivery(payload);
     if (response.success) {
@@ -1166,6 +1219,13 @@ const handleSaveDelivery = async () => {
       resetForm();
       onOpenChange(false);
       onSuccess?.();
+    } else {
+      // Bug 2 fix: exibir erro quando createDelivery retorna success=false
+      toast({
+        title: 'Erro ao salvar entrega',
+        description: response.error || 'Não foi possível cadastrar a entrega. Tente novamente.',
+        variant: 'destructive'
+      });
     }
   } catch (error) {
     console.error('Erro ao salvar entrega', error);
@@ -1502,7 +1562,7 @@ const handleSaveDelivery = async () => {
                 </div>
                 <div className="space-y-2">
                   <Label>CNPJ/CPF</Label>
-                  <Input value={structuredData.remetente.cnpj_cpf} onChange={(e) => updateStructuredField('remetente', 'cnpj_cpf', e.target.value)} disabled={!isEditing} />
+                  <Input value={structuredData.remetente.cnpj_cpf} disabled readOnly />
                 </div>
                 <div className="space-y-2 md:col-span-2 lg:col-span-3">
                   <Label>EndereÃ§o</Label>
@@ -1620,7 +1680,7 @@ const handleSaveDelivery = async () => {
                 </div>
                 <div className="space-y-2">
                   <Label>CNPJ/CPF</Label>
-                  <Input value={structuredData.transportadora.cnpj_cpf} onChange={(e) => updateStructuredField('transportadora', 'cnpj_cpf', e.target.value)} disabled={!isEditing} />
+                  <Input value={structuredData.transportadora.cnpj_cpf} disabled readOnly />
                 </div>
                 <div className="space-y-2 md:col-span-2 lg:col-span-3">
                   <Label>EndereÃ§o</Label>

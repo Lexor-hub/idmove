@@ -7,6 +7,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useToast } from '@/hooks/use-toast';
 import { apiService } from '@/services/api';
 import { useAuth } from '@/contexts/AuthContext';
+import { processImageOCR } from '@/services/ocrService';
+import {
+  FIXED_NFE_EMITENTE_CNPJ,
+  FIXED_NFE_TRANSPORTADORA_CNPJ,
+} from '@/lib/nfeDefaults';
 import {
   Upload,
   Camera,
@@ -50,8 +55,8 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
 
   // Form fields
   const [cnpjDestinatario, setCnpjDestinatario] = useState('');
-  const [cnpjEmitente, setCnpjEmitente] = useState('');
-  const [cnpjTransportadora, setCnpjTransportadora] = useState('');
+  const [cnpjEmitente, setCnpjEmitente] = useState(FIXED_NFE_EMITENTE_CNPJ);
+  const [cnpjTransportadora, setCnpjTransportadora] = useState(FIXED_NFE_TRANSPORTADORA_CNPJ);
   const [clientName, setClientName] = useState('');
   const [nfNumber, setNfNumber] = useState('');
   const [nfDate, setNfDate] = useState(new Date().toISOString().split('T')[0]);
@@ -93,8 +98,8 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
 
   const resetForm = () => {
     setCnpjDestinatario('');
-    setCnpjEmitente('');
-    setCnpjTransportadora('');
+    setCnpjEmitente(FIXED_NFE_EMITENTE_CNPJ);
+    setCnpjTransportadora(FIXED_NFE_TRANSPORTADORA_CNPJ);
     setClientName('');
     setNfNumber('');
     setNfDate(new Date().toISOString().split('T')[0]);
@@ -144,25 +149,29 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
     if (!nfImageFile) return;
 
     setGeminiLoading(true);
+    const applyExtractedData = (data: {
+      numero_nfe?: string | null;
+      cnpj_destinatario?: string | null;
+      nome_destinatario?: string | null;
+      endereco_destinatario?: string | null;
+    }) => {
+      if (data.numero_nfe) setNfNumber(data.numero_nfe);
+      if (data.cnpj_destinatario) setCnpjDestinatario(data.cnpj_destinatario);
+      setCnpjEmitente(FIXED_NFE_EMITENTE_CNPJ);
+      setCnpjTransportadora(FIXED_NFE_TRANSPORTADORA_CNPJ);
+      if (data.nome_destinatario) setClientName(data.nome_destinatario);
+      if (data.endereco_destinatario) setDeliveryAddress(data.endereco_destinatario);
+    };
+
     try {
       const response = await apiService.extractNfeWithGemini(nfImageFile);
 
       if (!response.success || !response.data) {
-        toast({
-          title: 'Erro na leitura da NF-e',
-          description: response.error || 'Não foi possível ler a NF-e. Preencha os dados manualmente.',
-          variant: 'destructive',
-        });
-        return;
+        throw new Error(response.error || 'Não foi possível ler a NF-e pela IA.');
       }
 
       const r = response.data;
-      if (r.numero_nfe) setNfNumber(r.numero_nfe);
-      if (r.cnpj_destinatario) setCnpjDestinatario(r.cnpj_destinatario);
-      if (r.cnpj_emitente) setCnpjEmitente(r.cnpj_emitente);
-      if (r.cnpj_transportadora) setCnpjTransportadora(r.cnpj_transportadora);
-      if (r.nome_destinatario) setClientName(r.nome_destinatario);
-      if (r.endereco_destinatario) setDeliveryAddress(r.endereco_destinatario);
+      applyExtractedData(r);
 
       setOcrDone(true);
 
@@ -174,11 +183,35 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
           : 'Não foi possível ler a NF-e. Preencha os dados manualmente.',
       });
     } catch (err) {
-      toast({
-        title: 'Erro na leitura da NF-e',
-        description: err instanceof Error ? err.message : 'Tente novamente ou preencha manualmente.',
-        variant: 'destructive',
-      });
+      const remoteError = err instanceof Error ? err.message : 'Leitura por IA indisponível.';
+
+      try {
+        const fallback = await processImageOCR(nfImageFile);
+
+        applyExtractedData({
+          numero_nfe: fallback.nfNumber,
+          cnpj_destinatario: fallback.cnpj,
+          nome_destinatario: fallback.clientName,
+          endereco_destinatario: fallback.address,
+        });
+
+        setOcrDone(true);
+
+        const filled = [fallback.nfNumber, fallback.cnpj, fallback.clientName, fallback.address].filter(Boolean).length;
+        toast({
+          title: filled > 0 ? 'NF-e lida com fallback local' : 'Nenhum dado identificado',
+          description: filled > 0
+            ? `Leitura por IA indisponível; OCR local aplicado. Revise os dados antes de salvar.`
+            : `${remoteError} Preencha os dados manualmente.`,
+          variant: filled > 0 ? 'default' : 'destructive',
+        });
+      } catch (fallbackError) {
+        toast({
+          title: 'Erro na leitura da NF-e',
+          description: remoteError,
+          variant: 'destructive',
+        });
+      }
     } finally {
       setGeminiLoading(false);
     }
@@ -411,9 +444,10 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
                 </div>
                 <Input
                   value={cnpjEmitente}
-                  onChange={(e) => setCnpjEmitente(e.target.value)}
                   placeholder="00.000.000/0000-00"
                   className="h-7 text-xs border-0 shadow-none focus-visible:ring-0 p-0"
+                  disabled
+                  readOnly
                 />
               </div>
 
@@ -439,9 +473,10 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
                 </div>
                 <Input
                   value={cnpjTransportadora}
-                  onChange={(e) => setCnpjTransportadora(e.target.value)}
                   placeholder="00.000.000/0000-00"
                   className="h-7 text-xs border-0 shadow-none focus-visible:ring-0 p-0"
+                  disabled
+                  readOnly
                 />
               </div>
             </div>

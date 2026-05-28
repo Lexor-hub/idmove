@@ -1,4 +1,8 @@
 import Tesseract from 'tesseract.js';
+import {
+  FIXED_NFE_EMITENTE_CNPJ,
+  FIXED_NFE_TRANSPORTADORA_CNPJ,
+} from '@/lib/nfeDefaults';
 
 export interface NFeExtractedData {
   cnpj: string;
@@ -10,6 +14,10 @@ export interface NFeExtractedData {
 }
 
 type ProgressCallback = (progress: number, status: string) => void;
+
+const FIXED_CNPJ_DIGITS = new Set(
+  [FIXED_NFE_EMITENTE_CNPJ, FIXED_NFE_TRANSPORTADORA_CNPJ].map((value) => value.replace(/\D/g, ''))
+);
 
 const SECTION_HEADERS = [
   'FORMA DE PAGAMENTO',
@@ -252,7 +260,7 @@ function extractNFNumber(text: string): string {
  */
 function extractCNPJFallback(text: string): string {
   // Prefer CNPJs found near "Destinatário" context
-  const cnpjs = extractCNPJsFromBlock(text);
+  const cnpjs = extractCNPJsFromBlock(text).filter((cnpj) => !FIXED_CNPJ_DIGITS.has(cnpj.replace(/\D/g, '')));
   return cnpjs.length > 0 ? cnpjs[0] : '';
 }
 
@@ -278,8 +286,7 @@ function extractClientNameFallback(text: string): string {
  */
 export function extractNFeData(rawText: string): Omit<NFeExtractedData, 'rawText' | 'confidence'> {
   const allCnpjs = extractCNPJsFromBlock(rawText);
-  // O cliente que fez o carregamento é o Emitente, que na NF-e quase sempre é o primeiro CNPJ a aparecer
-  const emitenteCnpj = allCnpjs.length > 0 ? allCnpjs[0] : '';
+  const nonFixedCnpjs = allCnpjs.filter((cnpj) => !FIXED_CNPJ_DIGITS.has(cnpj.replace(/\D/g, '')));
   
   const block = extractDestinatarioBlock(rawText);
 
@@ -295,8 +302,8 @@ export function extractNFeData(rawText: string): Omit<NFeExtractedData, 'rawText
 
   if (!clientName) clientName = extractClientNameFallback(rawText);
   
-  // Prioriza o CNPJ do carregamento (emitente), caso falhe usa o do destinatário
-  const cnpj = emitenteCnpj || destinatarioCnpj || extractCNPJFallback(rawText);
+  // Para o fluxo atual, o único CNPJ variável é o do destinatário.
+  const cnpj = destinatarioCnpj || nonFixedCnpjs[0] || extractCNPJFallback(rawText);
 
   return { cnpj, clientName, nfNumber: extractNFNumber(rawText), address };
 }

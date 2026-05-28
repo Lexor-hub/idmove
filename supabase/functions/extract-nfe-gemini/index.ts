@@ -13,11 +13,11 @@ const PROMPT =
   "Você é um especialista em leitura de DANFE (Documento Auxiliar da Nota Fiscal Eletrônica brasileira).\n" +
   "Analise a imagem com atenção e extraia exatamente os seguintes campos em JSON:\n\n" +
   "- numero_nfe: número da NF-e (campo 'Nº' no canto superior direito, apenas os dígitos, sem zeros à esquerda desnecessários)\n" +
-  "- cnpj_emitente: CNPJ do emitente (seção EMITENTE, formato XX.XXX.XXX/XXXX-XX)\n" +
   "- nome_destinatario: Razão social ou nome do destinatário (seção DESTINATÁRIO/REMETENTE, campo NOME/RAZÃO SOCIAL)\n" +
   "- cnpj_destinatario: CNPJ do destinatário (seção DESTINATÁRIO/REMETENTE, campo CNPJ/CPF, formato XX.XXX.XXX/XXXX-XX)\n" +
   "- endereco_destinatario: Endereço completo do destinatário (logradouro, número, bairro, município, UF, CEP)\n" +
-  "- cnpj_transportadora: CNPJ da transportadora (seção TRANSPORTADOR/VOLUMES TRANSPORTADOS, campo CNPJ)\n\n" +
+  "- cnpj_emitente: retorne null; este campo é fixo no sistema\n" +
+  "- cnpj_transportadora: retorne null; este campo é fixo no sistema\n\n" +
   "Regras:\n" +
   "- Se um campo não estiver visível ou legível, use null\n" +
   "- Mantenha formatação original dos CNPJs (com pontos, barra e hífen)\n" +
@@ -83,7 +83,7 @@ Deno.serve(async (req: Request) => {
   const apiKey = Deno.env.get("OPENAI_API_KEY");
   if (!apiKey) {
     console.error("[extract-nfe-gemini] OPENAI_API_KEY not set");
-    return jsonResponse({ error: "Serviço de leitura indisponível no momento." }, 503);
+    return jsonResponse({ error: "OPENAI_API_KEY não configurada na função de leitura." }, 503);
   }
 
   try {
@@ -120,7 +120,7 @@ Deno.serve(async (req: Request) => {
     if (!openaiRes.ok) {
       const errText = await openaiRes.text();
       console.error("[extract-nfe-gemini] OpenAI API error:", openaiRes.status, errText.slice(0, 300));
-      return jsonResponse({ error: "Serviço de leitura indisponível no momento." }, 503);
+      return jsonResponse({ error: `Erro na API OpenAI (${openaiRes.status}).` }, 503);
     }
 
     const openaiJson = await openaiRes.json();
@@ -156,6 +156,6 @@ Deno.serve(async (req: Request) => {
     );
   } catch (err) {
     console.error("[extract-nfe-gemini] Error:", err instanceof Error ? err.message : String(err));
-    return jsonResponse({ error: "Serviço de leitura indisponível no momento." }, 503);
+    return jsonResponse({ error: "Falha inesperada ao chamar a API OpenAI." }, 503);
   }
 });
