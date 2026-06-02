@@ -5,7 +5,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { computeMovementStatus, getMovementStatusHex, MOVEMENT_STATUS_LABEL, MovementStatus } from '@/lib/driver-status';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Clock, Truck } from 'lucide-react';
+import { Clock, Truck, AlertTriangle } from 'lucide-react';
 
 const DEFAULT_CENTER: LatLngTuple = [-23.55052, -46.633308];
 
@@ -120,6 +120,10 @@ const Tracking = () => {
   const [locations, setLocations] = useState<DriverLocation[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Saúde do tracking: comparar nº de sessões ativas (driver_tracking_sessions) vs
+  // motoristas realmente visíveis no mapa. Diferença sinaliza motorista que iniciou
+  // rota mas parou de enviar GPS (Chrome em background, vínculo quebrado etc).
+  const [activeSessionDrivers, setActiveSessionDrivers] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let isMounted = true;
@@ -163,7 +167,22 @@ const Tracking = () => {
       }
     };
 
+    const fetchActiveSessions = async () => {
+      const { data, error: sessionError } = await supabase
+        .from('driver_tracking_sessions')
+        .select('driver_id')
+        .eq('status', 'active');
+      if (!isMounted) return;
+      if (sessionError) {
+        console.warn('[Tracking] Erro ao buscar sessões ativas:', sessionError);
+        return;
+      }
+      setActiveSessionDrivers(new Set((data || []).map((row) => String(row.driver_id))));
+    };
+
     fetchAll();
+    fetchActiveSessions();
+    const sessionsPoll = setInterval(fetchActiveSessions, 60_000);
 
     // Realtime subscription — escuta INSERT e UPDATE
     const channel = supabase
@@ -246,6 +265,7 @@ const Tracking = () => {
     return () => {
       isMounted = false;
       clearInterval(offlineTimer);
+      clearInterval(sessionsPoll);
       supabase.removeChannel(channel);
     };
   }, []);
@@ -266,6 +286,17 @@ const Tracking = () => {
     [locations]
   );
 
+  // Motoristas com sessão de tracking aberta mas sem ponto recente no mapa.
+  // Sinaliza visualmente o que antes ficava silencioso (caso João/Ana 02/06).
+  const visibleDriverIds = useMemo(
+    () => new Set(locations.map((l) => String(l.driver_id))),
+    [locations]
+  );
+  const missingDriverCount = useMemo(
+    () => Array.from(activeSessionDrivers).filter((id) => !visibleDriverIds.has(id)).length,
+    [activeSessionDrivers, visibleDriverIds]
+  );
+
   return (
     <main className="container mx-auto px-4 py-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -276,6 +307,29 @@ const Tracking = () => {
           </p>
         </div>
       </div>
+
+      {missingDriverCount > 0 && (
+        <Card className="border-amber-300 bg-amber-50">
+          <CardContent className="pt-4">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-700" />
+              <div className="text-sm text-amber-900">
+                <p className="font-semibold">
+                  {missingDriverCount} motorista(s) em rota sem posição no mapa
+                </p>
+                <p className="text-xs mt-1">
+                  Têm sessão de rota ativa, mas pararam de enviar GPS. Pode ser tela
+                  bloqueada, app em segundo plano ou conexão instável. Vale checar com o
+                  motorista antes de cobrar.
+                </p>
+                <p className="text-xs mt-1 text-amber-800">
+                  {activeSessionDrivers.size} sessão(ões) ativa(s) · {locations.length} visível(is) no mapa
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>

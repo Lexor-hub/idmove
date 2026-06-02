@@ -20,6 +20,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 import { apiService } from '@/services/api';
+import { todayBrt } from '@/lib/date';
 import { computeMovementStatus, getMovementStatusTw, MOVEMENT_STATUS_LABEL, MovementStatus } from '@/lib/driver-status';
 import { useToast } from '@/hooks/use-toast';
 
@@ -215,7 +216,7 @@ export const SupervisorDashboard = () => {
       const response = await apiService.getDeliveries();
 
       if (response.success && Array.isArray(response.data)) {
-        const todayIso = new Date().toISOString().slice(0, 10);
+        const todayIso = todayBrt();
         const normalizeString = (value: unknown, fallback: string) => {
           if (typeof value === 'string') {
             const trimmed = value.trim();

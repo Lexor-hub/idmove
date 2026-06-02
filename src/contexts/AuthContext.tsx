@@ -171,13 +171,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const logout = () => {
-    console.log('Fazendo logout...');
+  const logout = async () => {
+    // Encerra sessão no Supabase + invalida cache do apiService.
+    // Sem isso, RLS continua respondendo como o usuário anterior, e o próximo
+    // login no mesmo navegador herda o contexto antigo (driver_id/company_id).
+    try {
+      await apiService.logout();
+    } catch (error) {
+      console.warn('Falha ao encerrar sessão remota; seguindo com logout local.', error);
+    }
     clearStoredAuth();
     setUser(null);
     setCompany(null);
     setAuthStep('login');
-    
+
     toast({
       title: "Logout realizado",
       description: "Você foi desconectado com sucesso.",

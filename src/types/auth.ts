@@ -42,7 +42,7 @@ export interface AuthContextType {
   authStep: 'login' | 'company' | 'complete';
   login: (credentials: LoginCredentials) => Promise<void>;
   selectCompany: (companyId: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   loading: boolean;
 }
 

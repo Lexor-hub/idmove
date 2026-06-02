@@ -397,6 +397,17 @@ export const UserManagement: React.FC = () => {
               <DialogDescription>Preencha os dados do novo usuário abaixo</DialogDescription>
             </DialogHeader>
             <div className="space-y-4">
+              {user?.role !== 'MASTER' && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm">
+                  <span className="font-medium text-amber-900">Empresa de destino: </span>
+                  <span className="text-amber-900">
+                    {user?.company_name || 'Sua empresa atual'}
+                  </span>
+                  <p className="mt-1 text-xs text-amber-800">
+                    O usuário será vinculado a essa empresa. Para criar em outra, troque o contexto antes.
+                  </p>
+                </div>
+              )}
               <div>
                 <Label htmlFor="email">Email *</Label>
                 <Input

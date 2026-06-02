@@ -33,6 +33,26 @@ export const Dashboard: React.FC = () => {
 
   const userRole = roleMapping[user.role || user.user_type || ''] || user.role || user.user_type || '';
 
+  // Motorista com cadastro incompleto: sem registro em `drivers`, qualquer ação dele
+  // (iniciar rota, listar entregas, enviar GPS) seria bloqueada silenciosamente pelo RLS.
+  // Mostramos tela explicativa em vez de dashboard vazio que confunde motorista e operação.
+  if (userRole === 'DRIVER' && !user.driver_id) {
+    return (
+      <div className="flex items-center justify-center min-h-screen p-6">
+        <div className="text-center max-w-md space-y-3">
+          <h2 className="text-2xl font-bold text-gray-900">Cadastro incompleto</h2>
+          <p className="text-gray-700">
+            Seu acesso de motorista ainda não está vinculado ao cadastro operacional.
+          </p>
+          <p className="text-sm text-gray-500">
+            Avise o administrador da transportadora para concluir seu cadastro. Assim que
+            for ajustado, faça logout e login novamente.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   switch (userRole) {
     case 'MASTER':
       return <MasterDashboard />;

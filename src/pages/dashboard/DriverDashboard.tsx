@@ -28,6 +28,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 import { useDriverLocation, type DriverTrackingPosition } from '@/hooks/useDriverLocation';
 import { SimpleDeliveryForm } from '@/components/delivery/SimpleDeliveryForm';
+import { todayBrt } from '@/lib/date';
 import { Capacitor } from '@capacitor/core';
 
 // CORRIGIDO: A interface agora inclui 'createdAt' e 'driverId'
@@ -482,9 +483,9 @@ export const DriverDashboard = () => {
         }
 
         try {
-            const response = await apiService.getDeliveries({ 
+            const response = await apiService.getDeliveries({
                  driver_id: driverIdToFetch,
-                 scheduled_date: new Date().toISOString().slice(0, 10),
+                 scheduled_date: todayBrt(),
             });
 
             if (response.success && Array.isArray(response.data) && response.data.length > 0) {

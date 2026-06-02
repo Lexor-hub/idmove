@@ -1,5 +1,6 @@
 import { supabase, requireSupabaseConfig } from '@/integrations/supabase/client';
 import type { CompanyRow, DeliveryStatus, DriverStatus, ProfileRow } from '@/integrations/supabase/types';
+import { todayBrt } from '@/lib/date';
 import { buildRetryDeliveryPayload, getNextScheduledDate } from '@/lib/delivery-attempts';
 import { normalizeBrazilianDocument } from '@/lib/documents';
 import { normalizeRole } from '@/lib/roles';
@@ -74,7 +75,7 @@ const asNumber = (value: unknown, fallback = 0) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
-const todayIso = () => new Date().toISOString().slice(0, 10);
+const todayIso = todayBrt;
 
 const responseError = (error: unknown) => {
   if (error instanceof Error) return error.message;
@@ -229,6 +230,13 @@ const shouldFallbackToSignup = (error: unknown) => {
 
 class ApiService {
   private contextCache: CurrentContext | null = null;
+
+  // Invalida o cache de contexto (profile/driver_id/company_id).
+  // Deve ser chamado em todo logout e antes de cada login — sem isso o segundo
+  // usuário no mesmo navegador herda o driver_id do primeiro e enxerga dados errados.
+  clearContext(): void {
+    this.contextCache = null;
+  }
 
   private async run<T>(operation: () => Promise<T>): Promise<ApiResponse<T>> {
     try {
@@ -414,6 +422,21 @@ class ApiService {
     const email = String(payload.email || '').trim().toLowerCase();
     const username = String(payload.username || email).trim();
 
+    // Blindagem contra criação de usuário em empresa diferente da do admin chamador.
+    // O RPC `create_managed_user` já protege, mas este fallback executava no client
+    // sem checagem — foi por aqui que motoristas terminaram em outra company_id.
+    if (role !== 'MASTER') {
+      const callerContext = await this.getContext();
+      const callerRole = callerContext.profile.role;
+      const callerCompanyId = callerContext.profile.company_id;
+      if (callerRole !== 'MASTER' && companyId && companyId !== callerCompanyId) {
+        throw new Error('Não é possível criar usuários para outra empresa.');
+      }
+      if (!companyId) {
+        throw new Error('Usuario sem empresa vinculada.');
+      }
+    }
+
     const { data: sessionData } = await supabase.auth.getSession();
     const adminSession = sessionData.session
       ? {
@@ -537,6 +560,9 @@ class ApiService {
   }
 
   async login(credentials: { username: string; password: string }) {
+    // Limpa qualquer contexto residual antes do novo login — evita que o usuário entrante
+    // herde driver_id/company_id do usuário anterior no mesmo navegador.
+    this.clearContext();
     return this.run(async () => {
       const email = credentials.username.trim();
       const { data, error } = await supabase.auth.signInWithPassword({
@@ -551,6 +577,15 @@ class ApiService {
         token: data.session.access_token,
         user: this.profileToUser(context.profile, context.company, context.driverId, context.clientId),
       };
+    });
+  }
+
+  async logout() {
+    return this.run(async () => {
+      this.clearContext();
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+      return { success: true };
     });
   }
 
