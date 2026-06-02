@@ -1274,6 +1274,30 @@ class ApiService {
     });
   }
 
+  // Atualiza campos extras do driver criados por fluxos auxiliares (DriverForm),
+  // já que o RPC create_managed_user só popula name/cpf/status.
+  async updateDriver(driverId: string | number, payload: Record<string, any>) {
+    return this.run(async () => {
+      const updates: Record<string, any> = {};
+      if (payload.name !== undefined) updates.name = payload.name;
+      if (payload.cpf !== undefined) updates.cpf = normalizeBrazilianDocument(payload.cpf);
+      if (payload.phone !== undefined) updates.phone = payload.phone || null;
+      if (payload.license !== undefined) updates.license = payload.license || null;
+      if (payload.status !== undefined) updates.status = payload.status;
+      if (Object.keys(updates).length === 0) {
+        return { id: String(driverId) };
+      }
+      const { data, error } = await supabase
+        .from('drivers')
+        .update(updates)
+        .eq('id', String(driverId))
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    });
+  }
+
   async updateDriverStatus(driverId: string | number, status: DriverStatus) {
     return this.run(async () => {
       const { data, error } = await supabase

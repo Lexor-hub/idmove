@@ -1,43 +1,41 @@
-# Mensagens — 02/06/2026 (v2)
+# Mensagens — 02/06/2026 (v3)
 
-> **Atualização:** Ana e João estão reclamando que ocorrências/entregas que eles
-> registraram "não foram registradas". Não é verdade — os registros ESTÃO no banco,
-> só não estavam visíveis pro painel admin (causa: empresa errada). Mas pra eles é
-> isso que parece, e estão putos com razão.
+> **Atualização v3:** Igor está puto, com razão. "4h úteis" foi calibração ruim
+> minha — pra operação dele, isso é uma eternidade. Cliente do litoral já se foi.
+> Apareceram dois bugs novos no caminho: admin não consegue adicionar motorista,
+> e cadastro de carro travando. **Acumulamos prazos quebrados sem aviso.**
 >
-> **Mudanças na v2 vs v1:**
-> - Mensagem do Ana/João agora reconhece o trabalho deles ANTES de pedir qualquer
->   coisa. Sai o "favor, faça logout/login" — entra "confirmação pra fechar".
-> - Mensagem do Fabio NÃO menciona dependência dos motoristas (queimaria mais).
-> - Igor recebe a frase exata pra falar com Ana/João pessoalmente, já que o
->   vínculo dele com eles é mais próximo.
+> **Mudanças v3:**
+> - Tirado "4h úteis" das duas mensagens. Não cabe.
+> - Mensagem do Igor: mais curta, sem SLA escrito, com presença operacional
+>   concreta no lugar (telefone aberto na hora que precisar).
+> - Mensagem do Fabio: foco em "resolvido", sem promessa de janela de resposta.
+> - Adicionada seção "bugs novos abertos hoje" pra rastreamento.
 
 ---
 
 ## 1) Mensagem para o IGOR (envie primeiro — agora)
 
 ```
-Igor, sem rodeio:
+Igor, eu te entendo. Quebramos dois prazos sem te avisar antes, e isso é o que mais corrói. Não vou empilhar promessa em cima disso.
 
-Achei a causa do que o Fabio viu, e também por que a Ana e o João estão dizendo que as ocorrências/entregas deles "não foram registradas". O que aconteceu foi o seguinte:
+O que tem agora, concreto:
 
-Os dois ficaram com o cadastro vinculado a uma empresa diferente do restante. Tudo que eles fizeram FOI registrado no sistema (ocorrência, canhoto, GPS, finalização), só não aparecia no painel da operação porque o painel filtra por empresa. Por isso parecia que o trabalho deles tinha sumido.
+Achei a causa do que o Fabio viu hoje. Ana e João estavam com cadastro vinculado a uma empresa diferente do restante. Tudo que eles registraram (ocorrência, canhoto, GPS, finalização) ESTÁ no banco — só não aparecia no painel porque o filtro é por empresa. Não se perdeu nada. Já corrigi o vínculo e reatribuí o que eles processaram hoje pra empresa certa.
 
-Já corrigi o vínculo dos dois e reatribuí tudo que eles processaram hoje pra empresa certa. A partir de agora os registros deles aparecem em mapa, lista, KPIs e relatórios — pra você e pro Fabio. Mando print quando refletir.
-
-Sobre a Ana e o João: eles estão certos em estarem chateados, e é importante que você fale com eles antes que isso vire desconfiança em mim e em você. Sugestão de texto que você manda pros dois:
+Você falar com a Ana e o João vai cair melhor do que eu falando. Texto pronto pra você mandar pros dois:
 
 — início —
-Ana / João, achamos o que aconteceu. Tudo que vocês registraram hoje (ocorrências, canhotos, entregas) ficou salvo, não se perdeu nada. O problema foi do nosso lado: o cadastro de vocês estava em uma configuração diferente do restante, e por isso o que vocês fizeram não aparecia no painel da operação. Já corrigimos aqui. Quando vocês forem usar o app de novo, é só entrar normal — vai funcionar.
+Ana / João, achamos o que aconteceu. Tudo que vocês registraram hoje (ocorrências, canhotos, entregas) ficou salvo, não se perdeu nada. O problema foi do nosso lado: o cadastro de vocês estava em uma configuração diferente do restante, e por isso o que vocês fizeram não aparecia no painel da operação. Já corrigimos aqui. Quando forem usar o app de novo, é só entrar normal — vai funcionar.
 — fim —
 
-Sobre o que vou fazer pra isso não voltar:
+Os outros dois pontos que você levantou:
+- Add motorista pelo painel admin: vou olhar agora. Me manda o print do erro que aparece.
+- Cadastro de carro travando: idem, me manda o que apareceu na tela.
 
-1. Mandei mensagem direta pro Fabio explicando a causa e a correção. Não fica no seu colo.
-2. Esta semana o próprio sistema passa a bloquear cadastro de motorista em empresa errada — não depende mais de quem cadastra lembrar disso.
-3. Você passa a ter status semanal por escrito: o que entrou em produção, o que está em correção, prazo de cada item. Mesma informação que mando pro Fabio.
+Modo de trabalho daqui pra frente: linha direta no WhatsApp. Quando precisar de mim, me chama na hora. Não te coloco em janela de 4h, isso foi promessa minha mal calibrada. Vou estar disponível durante a operação. Se eu não puder responder no momento, te aviso o porquê e quando volto.
 
-Qualquer motorista reportando problema, me chama direto. Retorno em até 4h úteis com diagnóstico inicial.
+E não vou mais empurrar prazo sem confirmar. Se um item da semana atrasar, você sabe antes do prazo vencer, não depois.
 ```
 
 ---
@@ -55,9 +53,9 @@ Diferente do PDF de ontem, aqui já tem ação tomada, não plano:
 - Tudo que eles registraram hoje foi reatribuído pra empresa correta — entra retroativo no seu painel.
 - Te mando o print do painel já refletindo isso em seguida.
 
-Pra não voltar a acontecer: esta semana o próprio sistema bloqueia a criação de motorista em empresa errada — deixa de depender de quem está cadastrando lembrar disso.
+Pra não voltar a acontecer: o próprio sistema passa a bloquear a criação de motorista em empresa errada — deixa de depender de quem está cadastrando lembrar disso.
 
-A partir de agora, qualquer ponto que você reportar tem retorno meu em até 4h úteis com diagnóstico inicial no mesmo dia. Sem repassar.
+Estou à disposição direto pra qualquer ponto que apareça.
 ```
 
 ---
@@ -100,6 +98,26 @@ Use esses bullets se Igor, Fabio ou os motoristas voltarem na carga:
 - **"Por que isso aconteceu?"** — Os dois cadastros foram feitos vinculados a uma empresa diferente do restante (vestígio de uma configuração anterior do ambiente). O sistema permitiu na época; a partir desta semana bloqueia.
 - **"Como sei que não vai acontecer de novo?"** — Duas camadas: (1) o próprio sistema passa a bloquear cadastro em empresa errada, e (2) o painel do admin passa a ter um alerta visual quando algum motorista em rota some do mapa, pra detectar na hora em vez de descobrir só quando o cliente reclama.
 - **"E hoje, o que ficou registrado?"** — Tudo: ocorrências, canhotos, GPS, finalizações. Reatribuído pra empresa correta. Print do painel anexado.
+
+---
+
+## Bugs novos abertos hoje (02/06) — investigar em paralelo
+
+| # | Bug | O que sei | O que preciso pra atacar |
+|---|---|---|---|
+| 1 | Admin não consegue adicionar motorista pelo painel | Reportado pelo Igor | **Print do erro que aparece** (toast, mensagem na tela, ou ficar travado em "Criando...") |
+| 2 | Cadastro de carro travando | Reportado pelo Igor | Em qual ponto trava — botão "Salvar" dá erro? Some da lista? Não abre a tela? Print ajuda. |
+
+Hipóteses iniciais pro #1:
+- RPC `create_managed_user` retornando erro de permissão (role do admin)
+- Email duplicado (mensagem amigável existe mas pode estar sumindo)
+- Fallback `createUserViaSignup` falhando no `auth.signUp` (cota Supabase, email malformado)
+
+Hipóteses iniciais pro #2:
+- RLS de `vehicles` bloqueando se `company_id` estiver NULL no contexto
+- Validação de placa/modelo no cliente
+
+Vou pegar assim que tiver o print/erro. Sem o detalhe é palpite.
 
 ---
 
