@@ -77,16 +77,39 @@ const asNumber = (value: unknown, fallback = 0) => {
 
 const todayIso = todayBrt;
 
+// Traduz erros técnicos do Postgres/Supabase pra mensagens úteis ao operador.
+// Cenários cobertos: duplicate key (23505), foreign key (23503), pgcrypto missing.
+const translateKnownErrors = (raw: string): string | null => {
+  const lower = raw.toLowerCase();
+  if (lower.includes('23505') && lower.includes('profiles_auth_user_id_key')) {
+    return 'Esse email já tem cadastro parcial no sistema (de uma tentativa anterior que falhou). Avise o suporte pra limpar o cadastro órfão antes de tentar de novo.';
+  }
+  if (lower.includes('23505') && (lower.includes('users_email') || lower.includes('email'))) {
+    return 'Já existe um usuário cadastrado com esse email.';
+  }
+  if (lower.includes('gen_salt') && lower.includes('does not exist')) {
+    return 'Extensão de criptografia do banco indisponível. Avise o suporte (pgcrypto search_path).';
+  }
+  if (lower.includes('permissão negada') || lower.includes('permission denied')) {
+    return 'Você não tem permissão para essa ação.';
+  }
+  if (lower.includes('user already registered')) {
+    return 'Já existe um usuário cadastrado com esse email.';
+  }
+  return null;
+};
+
 const responseError = (error: unknown) => {
-  if (error instanceof Error) return error.message;
-  if (typeof error === 'string') return error;
-  if (error && typeof error === 'object') {
+  let raw = 'Erro interno';
+  if (error instanceof Error) raw = error.message;
+  else if (typeof error === 'string') raw = error;
+  else if (error && typeof error === 'object') {
     const supabaseError = error as { message?: unknown; details?: unknown; hint?: unknown; code?: unknown };
     const parts = [supabaseError.message, supabaseError.details, supabaseError.hint, supabaseError.code]
       .filter((part): part is string => typeof part === 'string' && part.trim().length > 0);
-    if (parts.length > 0) return parts.join(' ');
+    if (parts.length > 0) raw = parts.join(' ');
   }
-  return 'Erro interno';
+  return translateKnownErrors(raw) || raw;
 };
 
 const publicUrl = (bucket: string, path?: string | null) => {
@@ -703,6 +726,21 @@ class ApiService {
 
       if (role !== 'MASTER' && !companyId) {
         throw new Error('Usuario sem empresa vinculada.');
+      }
+
+      // Pré-validação: se já existe profile com esse email, aborta ANTES de tentar
+      // INSERT. Evita criar mais órfãos quando uma tentativa anterior falhou no meio.
+      if (payloadEmail) {
+        const { data: existingProfile } = await supabase
+          .from('profiles')
+          .select('id, full_name, role')
+          .eq('email', payloadEmail)
+          .maybeSingle();
+        if (existingProfile) {
+          throw new Error(
+            `Já existe usuário cadastrado com o email ${payloadEmail} (${existingProfile.full_name} — ${existingProfile.role}). Verifique a lista de usuários.`
+          );
+        }
       }
 
       const tryRpc = async () => {
