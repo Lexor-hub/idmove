@@ -103,21 +103,24 @@ Use esses bullets se Igor, Fabio ou os motoristas voltarem na carga:
 
 ## Bugs novos abertos hoje (02/06) — investigar em paralelo
 
-| # | Bug | O que sei | O que preciso pra atacar |
+| # | Bug | Status | Ação |
 |---|---|---|---|
-| 1 | Admin não consegue adicionar motorista pelo painel | Reportado pelo Igor | **Print do erro que aparece** (toast, mensagem na tela, ou ficar travado em "Criando...") |
-| 2 | Cadastro de carro travando | Reportado pelo Igor | Em qual ponto trava — botão "Salvar" dá erro? Some da lista? Não abre a tela? Print ajuda. |
+| 1 | Admin não consegue adicionar motorista pelo painel | **Causa achada** | Rodar `SQL_URGENTE_FIX_PGCRYPTO.sql` no Supabase Dashboard. ~1s, resolve. |
+| 2 | Cadastro de carro travando | Aguardando print | Me manda print do erro que aparece. |
 
-Hipóteses iniciais pro #1:
-- RPC `create_managed_user` retornando erro de permissão (role do admin)
-- Email duplicado (mensagem amigável existe mas pode estar sumindo)
-- Fallback `createUserViaSignup` falhando no `auth.signUp` (cota Supabase, email malformado)
+**Bug #1 — causa raiz:**
+Erro no print: `function gen_salt(unknown) does not exist (42883)`. O RPC `create_managed_user` chamava `gen_salt`/`crypt` da extensão pgcrypto, mas o `search_path = public` declarado na função impedia ver o schema `extensions` onde a pgcrypto fica no Supabase. **Hash da senha falhava antes de qualquer INSERT.**
 
-Hipóteses iniciais pro #2:
-- RLS de `vehicles` bloqueando se `company_id` estiver NULL no contexto
-- Validação de placa/modelo no cliente
+Não é problema do DriverForm — a refatoração que fiz nele resolve dois outros bugs (company_id hardcoded e INSERT duplicado), mas o erro que o admin via era esse do pgcrypto. Os dois fixes são complementares.
 
-Vou pegar assim que tiver o print/erro. Sem o detalhe é palpite.
+**Como aplicar agora (sem esperar deploy):**
+
+1. Abra o Supabase Dashboard → projeto idmove → SQL Editor
+2. Cole o conteúdo de `SQL_URGENTE_FIX_PGCRYPTO.sql` (raiz do repo)
+3. Aperte Run
+4. Teste cadastrar um motorista no painel
+
+Migration equivalente já está versionada em `supabase/migrations/20260602000000_fix_pgcrypto_search_path.sql` pra subir com o próximo `supabase db push`.
 
 ---
 
