@@ -4,7 +4,6 @@ import { todayBrt } from '@/lib/date';
 import { buildRetryDeliveryPayload, getNextScheduledDate } from '@/lib/delivery-attempts';
 import { normalizeBrazilianDocument } from '@/lib/documents';
 import { normalizeRole } from '@/lib/roles';
-import { buildProfilePayload } from '@/lib/user-creation';
 
 export type ApiResponse<T> = { success: boolean; data?: T; error?: string };
 
@@ -239,18 +238,6 @@ const prepareNfeImageForExtraction = async (file: File) => {
   }
 };
 
-const shouldFallbackToSignup = (error: unknown) => {
-  const message = responseError(error).toLowerCase();
-  return (
-    message.includes('failed to fetch') ||
-    message.includes('fetch failed') ||
-    message.includes('network error') ||
-    message.includes('request failed') ||
-    message.includes('could not find the function') ||
-    message.includes('function public.create_managed_user does not exist')
-  );
-};
-
 class ApiService {
   private contextCache: CurrentContext | null = null;
 
@@ -425,162 +412,12 @@ class ApiService {
     return { path, url: publicUrl(bucket, path) };
   }
 
-  private async restoreSession(session: { access_token: string; refresh_token: string } | null) {
-    if (!session) return;
-    const { error } = await supabase.auth.setSession({
-      access_token: session.access_token,
-      refresh_token: session.refresh_token,
-    });
-    if (error) throw error;
-  }
-
-  private async createUserViaSignup(params: {
-    payload: Record<string, any>;
-    role: ReturnType<typeof normalizeRole>;
-    companyId: string | null;
-    fullName: string;
-    document: string | null;
-  }) {
-    const { payload, role, companyId, fullName, document } = params;
-    const email = String(payload.email || '').trim().toLowerCase();
-    const username = String(payload.username || email).trim();
-
-    // Blindagem contra criação de usuário em empresa diferente da do admin chamador.
-    // O RPC `create_managed_user` já protege, mas este fallback executava no client
-    // sem checagem — foi por aqui que motoristas terminaram em outra company_id.
-    if (role !== 'MASTER') {
-      const callerContext = await this.getContext();
-      const callerRole = callerContext.profile.role;
-      const callerCompanyId = callerContext.profile.company_id;
-      if (callerRole !== 'MASTER' && companyId && companyId !== callerCompanyId) {
-        throw new Error('Não é possível criar usuários para outra empresa.');
-      }
-      if (!companyId) {
-        throw new Error('Usuario sem empresa vinculada.');
-      }
-    }
-
-    const { data: sessionData } = await supabase.auth.getSession();
-    const adminSession = sessionData.session
-      ? {
-          access_token: sessionData.session.access_token,
-          refresh_token: sessionData.session.refresh_token,
-        }
-      : null;
-
-    const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-      email,
-      password: payload.password,
-      options: {
-        data: {
-          full_name: fullName,
-          role,
-        },
-      },
-    });
-
-    if (signUpError) throw signUpError;
-
-    const authUserId = signUpData.user?.id;
-    if (!authUserId) {
-      throw new Error('Nao foi possivel criar o usuario no Auth.');
-    }
-
-    await this.restoreSession(adminSession);
-
-    try {
-      const { data: profile, error: profileError } = await supabase
-        .from('profiles')
-        .insert(
-          buildProfilePayload({
-            authUserId,
-            companyId,
-            email,
-            fullName,
-            role,
-            username,
-            document,
-            status: payload.status || 'ATIVO',
-            isActive: payload.status ? String(payload.status).toUpperCase() === 'ATIVO' : true,
-          })
-        )
-        .select('*')
-        .single();
-      if (profileError) throw profileError;
-
-      let driverId: string | null = null;
-      let clientId: string | null = null;
-
-      if (role === 'DRIVER') {
-        const { data: driver, error: driverError } = await supabase
-          .from('drivers')
-          .insert({
-            company_id: companyId,
-            profile_id: profile.id,
-            name: fullName,
-            cpf: document,
-            status: payload.status || 'ATIVO',
-          })
-          .select('id')
-          .single();
-        if (driverError) throw driverError;
-        driverId = driver?.id || null;
-      }
-
-      if (role === 'CLIENT') {
-        const { data: client, error: clientError } = await supabase
-          .from('clients')
-          .insert({
-            company_id: companyId,
-            profile_id: profile.id,
-            name: fullName,
-            email,
-            document,
-          })
-          .select('id')
-          .single();
-        if (clientError) throw clientError;
-        clientId = client?.id || null;
-      }
-
-      let userCompany: CompanyRow | null = null;
-      if (companyId) {
-        const { data: fetchedCompany } = await supabase
-          .from('companies')
-          .select('*')
-          .eq('id', companyId)
-          .maybeSingle();
-        userCompany = fetchedCompany as CompanyRow | null;
-      }
-
-      return {
-        id: profile.id,
-        user_id: profile.auth_user_id || authUserId,
-        username: profile.username,
-        email: profile.email,
-        full_name: profile.full_name,
-        name: profile.full_name,
-        role: profile.role,
-        user_type: profile.role,
-        cpf: profile.cpf || undefined,
-        status: profile.status,
-        is_active: profile.is_active,
-        company_id: profile.company_id || undefined,
-        company_name: userCompany?.name,
-        company_domain: userCompany?.domain || undefined,
-        driver_id: driverId || undefined,
-        client_id: clientId || undefined,
-      };
-    } catch (error) {
-      try {
-        await supabase.rpc('delete_auth_user', { target_auth_user_id: authUserId });
-      } catch (cleanupError) {
-        console.warn('Cleanup do usuario criado parcialmente falhou.', cleanupError);
-      }
-      await this.restoreSession(adminSession);
-      throw error;
-    }
-  }
+  // Nota: o fallback `createUserViaSignup` foi removido em 04/06/2026.
+  // Causava órfãos em auth.identities sempre que falhava no meio
+  // (signUp criava auth.user + trigger criava profile com defaults;
+  // INSERT manual subsequente dava 23505 e o catch deletava só o
+  // auth.user, deixando profile pendurado). O RPC create_managed_user
+  // já cobre 100% dos casos com search_path corrigido e UPSERT.
 
   async login(credentials: { username: string; password: string }) {
     // Limpa qualquer contexto residual antes do novo login — evita que o usuário entrante
@@ -788,22 +625,7 @@ class ApiService {
         };
       };
 
-      try {
-        return await tryRpc();
-      } catch (error) {
-        if (!shouldFallbackToSignup(error)) {
-          throw error;
-        }
-
-        console.warn('create_managed_user RPC falhou; usando fallback via auth.signUp.', error);
-        return await this.createUserViaSignup({
-          payload,
-          role,
-          companyId: companyId || null,
-          fullName,
-          document,
-        });
-      }
+      return await tryRpc();
     });
   }
 
