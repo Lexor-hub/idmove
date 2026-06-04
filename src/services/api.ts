@@ -811,8 +811,9 @@ class ApiService {
     return this.run(async () => {
       const normalizedRole = (payload.user_type || payload.role) ? normalizeRole(payload.user_type || payload.role) : undefined;
       const document = normalizeBrazilianDocument(payload.cpf || payload.document);
+      // email excluído intencionalmente: alterar profiles.email sem alterar auth.users.email
+      // desincroniza a credencial de login. Email só pode ser mudado via fluxo de troca no Supabase Auth.
       const updatePayload: Record<string, any> = {
-        email: payload.email,
         full_name: payload.full_name || payload.name,
         username: payload.username,
         role: normalizedRole,
@@ -830,15 +831,43 @@ class ApiService {
         .single();
       if (error) throw error;
 
+      if (normalizedRole === 'DRIVER') {
+        const { data: existingDriver } = await supabase
+          .from('drivers')
+          .select('id')
+          .eq('profile_id', String(userId))
+          .maybeSingle();
+        if (!existingDriver) {
+          await supabase.from('drivers').insert({
+            company_id: data.company_id,
+            profile_id: String(userId),
+            name: data.full_name,
+            cpf: document || null,
+            status: data.status || 'ATIVO',
+          });
+        }
+      }
+
       if (normalizedRole === 'CLIENT') {
-        await supabase
+        const { data: existingClient } = await supabase
           .from('clients')
-          .update({
-            name: updatePayload.full_name || undefined,
-            email: updatePayload.email || undefined,
-            document,
-          })
-          .eq('profile_id', String(userId));
+          .select('id')
+          .eq('profile_id', String(userId))
+          .maybeSingle();
+        if (existingClient) {
+          await supabase
+            .from('clients')
+            .update({ name: data.full_name, document })
+            .eq('profile_id', String(userId));
+        } else {
+          await supabase.from('clients').insert({
+            company_id: data.company_id,
+            profile_id: String(userId),
+            name: data.full_name,
+            email: data.email,
+            document: document || null,
+          });
+        }
       }
 
       return data;
@@ -1112,8 +1141,8 @@ class ApiService {
       let occurrencesQuery = supabase
         .from('occurrences')
         .select('id')
-        .gte('created_at', `${today}T00:00:00`)
-        .lte('created_at', `${today}T23:59:59`);
+        .gte('created_at', `${today}T00:00:00-03:00`)
+        .lte('created_at', `${today}T23:59:59-03:00`);
       let positionsQuery = supabase
         .from('v_motoristas_posicao')
         .select('motorista_id,company_id,updated_at')
@@ -1720,7 +1749,8 @@ class ApiService {
       if (filters?.end_date) query = query.lte('created_at', filters.end_date);
       if (filters?.date) {
         const day = filters.date;
-        query = query.gte('created_at', `${day}T00:00:00`).lte('created_at', `${day}T23:59:59`);
+        // BRT = UTC-3. Sem o offset, o banco interpreta como UTC e perde ocorrências de noite.
+        query = query.gte('created_at', `${day}T00:00:00-03:00`).lte('created_at', `${day}T23:59:59-03:00`);
       }
       if (filters?.delivery_id) query = query.eq('delivery_id', filters.delivery_id);
 
@@ -1752,6 +1782,33 @@ class ApiService {
         .eq('company_id', companyId)
         .single();
       if (deliveryError) throw deliveryError;
+
+      // Dedup: se já existe ocorrência igual (mesmo motorista + entrega + descrição)
+      // criada nos últimos 2 minutos, retorna a existente em vez de duplicar.
+      // Cenário em prod (03/06/2026): Rafael clicou "Registrar" 2x porque rede ruim
+      // não confirmou na primeira; ocorrências duplicaram em 7-11s.
+      if (context.driverId) {
+        const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+        const { data: recente } = await supabase
+          .from('occurrences')
+          .select('*')
+          .eq('delivery_id', String(deliveryId))
+          .eq('driver_id', context.driverId)
+          .eq('description', payload.description)
+          .gte('created_at', twoMinAgo)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (recente) {
+          return {
+            ...recente,
+            rescheduled_delivery_id: recente.rescheduled_delivery_id || null,
+            next_scheduled_date: recente.next_scheduled_date || null,
+            retry_delivery: null,
+            _deduped: true,
+          };
+        }
+      }
 
       let photoPath: string | null = null;
       let photoUrl: string | null = null;

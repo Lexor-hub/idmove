@@ -88,7 +88,7 @@ export const DriverDashboard = () => {
     const { toast } = useToast();
 
     const resolveDriverId = useCallback(() => {
-        const idValue = user?.driver_id ?? user?.id;
+        const idValue = user?.driver_id;
         if (idValue === undefined || idValue === null) {
             return null;
         }
@@ -152,7 +152,7 @@ export const DriverDashboard = () => {
     const [wakeLockUnavailable, setWakeLockUnavailable] = useState(false);
     const [lastKnownPosition, setLastKnownPosition] = useState<DriverTrackingPosition | null>(null);
 
-    const driverIdForTracking = user?.driver_id || user?.id || '';
+    const driverIdForTracking = user?.driver_id || '';
 
     const releaseWakeLock = useCallback(async () => {
         const sentinel = wakeLockRef.current;
@@ -296,8 +296,8 @@ export const DriverDashboard = () => {
         const driverId = resolveDriverId();
         if (!driverId) {
             toast({
-                title: 'Motorista nÃ£o identificado',
-                description: 'NÃ£o foi possÃ­vel iniciar o rastreamento para este usuÃ¡rio.',
+                title: 'Motorista não identificado',
+                description: 'Não foi possível iniciar o rastreamento. Faça logout e login novamente.',
                 variant: 'destructive'
             });
             return false;
@@ -402,21 +402,21 @@ export const DriverDashboard = () => {
             await updateDriverStatus('offline');
         }
 
-        let description = 'NÃ£o foi possÃ­vel ativar a localizaÃ§Ã£o.';
+        let description = 'Não foi possível ativar a localização.';
         if ('code' in error) {
             if (error.code === error.PERMISSION_DENIED) {
-                description = 'Permita o acesso Ã  localizaÃ§Ã£o para acompanhar o trajeto da rota.';
+                description = 'Permita o acesso à localização para acompanhar o trajeto da rota.';
             } else if (error.code === error.POSITION_UNAVAILABLE) {
-                description = 'NÃ£o foi possÃ­vel obter sua localizaÃ§Ã£o atual. Tente novamente em instantes.';
+                description = 'Não foi possível obter sua localização atual. Tente novamente em instantes.';
             } else if (error.code === error.TIMEOUT) {
-                description = 'Tempo excedido ao tentar obter sua localizaÃ§Ã£o. Tente novamente.';
+                description = 'Tempo excedido ao tentar obter sua localização. Tente novamente.';
             }
         } else if (error.message) {
             description = error.message;
         }
 
         toast({
-            title: 'Erro de localizaÃ§Ã£o',
+            title: 'Erro de localização',
             description,
             variant: 'destructive'
         });
@@ -599,21 +599,21 @@ export const DriverDashboard = () => {
             title: "Dia iniciado!",
             description: "Você pode agora fotografar os canhotos e iniciar sua rota",
         });
-    };
-
-    const executeRouteStart = async () => {
-        if (routeStarted) return;
-        setRouteStarted(true);
-        const trackingStarted = await startLocationTracking();
-        if (!trackingStarted) {
-            setRouteStarted(false);
-            await updateDriverStatus('offline');
+        // Auto-inicia tracking GPS junto com "Iniciar Dia" — sem isso o motorista
+        // operava o dia todo sem aparecer no painel de rastreamento (visto em prod
+        // 03/06/2026: Rafael, João, Diego fizeram entregas mas nunca abriram sessão
+        // de tracking porque pulavam a etapa "Iniciar Rota" ou caíam no return
+        // silencioso de startRoute quando entregas ainda não estavam ASSIGNED).
+        if (!hasLocationConsent) {
+            setShowConsentDialog(true);
             return;
         }
-        toast({
-            title: 'Rota iniciada!',
-            description: 'Boa viagem! Lembre-se de fotografar os comprovantes.'
-        });
+        if (!routeStarted) {
+            setRouteStarted(true);
+            void startLocationTracking().then((ok) => {
+                if (!ok) setRouteStarted(false);
+            });
+        }
     };
 
     const handleStartRoute = () => {
@@ -621,7 +621,7 @@ export const DriverDashboard = () => {
             setShowConsentDialog(true);
             return;
         }
-        void executeRouteStart();
+        void startRoute();
     };
 
     const handleFinishRoute = async () => {
@@ -692,7 +692,15 @@ const handleDisableLocation = () => {
             localStorage.setItem('driver_location_consent', 'true');
         }
         setShowConsentDialog(false);
-        void executeRouteStart();
+        // Dispara tracking imediato após consentimento — antes precisava clicar
+        // "Iniciar Rota" depois, e se 0 entregas ASSIGNED esse botão abortava
+        // silenciosamente sem ativar GPS.
+        if (!routeStarted) {
+            setRouteStarted(true);
+            void startLocationTracking().then((ok) => {
+                if (!ok) setRouteStarted(false);
+            });
+        }
     };
 
     const handleConsentDecline = () => {
@@ -736,12 +744,23 @@ const handleDisableLocation = () => {
                 .filter(d => d.originalApiStatus === 'ASSIGNED')
                 .map(d => d.id);
 
+            // Garante tracking ATIVO mesmo sem entregas ASSIGNED — antes o return
+            // silencioso aqui deixava o motorista sem GPS o dia inteiro.
+            if (!routeStarted) {
+                setRouteStarted(true);
+                const trackingStarted = await startLocationTracking();
+                if (!trackingStarted) {
+                    setRouteStarted(false);
+                    return;
+                }
+            }
+
             if (assignedDeliveryIds.length === 0) {
                 toast({
-                    title: 'Nenhuma entrega carregada',
-                    description: 'Você deve carregar pelo menos uma entrega antes de iniciar a rota.',
-                    variant: 'destructive'
+                    title: 'Rastreamento ativo',
+                    description: 'GPS ligado. Carregue as entregas para começar a rota.',
                 });
+                setPhase('ON_ROUTE');
                 return;
             }
 
@@ -752,14 +771,8 @@ const handleDisableLocation = () => {
                     description: 'Boa viagem! Lembre-se de fotografar os comprovantes.'
                 });
                 setPhase('ON_ROUTE');
-                setRouteStarted(true);
-                const trackingStarted = await startLocationTracking();
-                if (!trackingStarted) {
-                    setRouteStarted(false);
-                    return;
-                }
             } else {
-                throw new Error((response as any).error || 'Erro ao iniciar rota');
+                throw new Error((response as any).error || 'Erro ao marcar entregas em trânsito');
             }
         } catch (error: any) {
             toast({
@@ -768,7 +781,7 @@ const handleDisableLocation = () => {
                 variant: 'destructive'
             });
         }
-    }, [deliveries, toast, updateDriverStatus, startLocationTracking]);
+    }, [deliveries, routeStarted, toast, startLocationTracking]);
 
     const getStatusColor = (status: string) => {
         switch (status) {
@@ -1085,6 +1098,22 @@ const handleDisableLocation = () => {
                                 {dayStarted ? 'Dia Iniciado' : 'Aguardando Início do Dia'}
                             </span>
                         </div>
+
+                        {/* Indicador de GPS — torna óbvio pro motorista se está enviando localização */}
+                        {dayStarted && (
+                            <div className={`flex items-center justify-center gap-2 text-xs px-3 py-1.5 rounded-full inline-flex mx-auto ${
+                                locationActive
+                                    ? 'bg-green-100 text-green-800 border border-green-300'
+                                    : requestingLocation
+                                        ? 'bg-blue-100 text-blue-800 border border-blue-300'
+                                        : 'bg-orange-100 text-orange-800 border border-orange-300'
+                            }`}>
+                                <MapPin className="h-3 w-3" />
+                                <span className="font-medium">
+                                    {locationActive ? 'GPS ativo' : requestingLocation ? 'Conectando GPS...' : 'GPS pausado'}
+                                </span>
+                            </div>
+                        )}
 
                         {!dayStarted ? (
                             <Button onClick={handleStartDay} className="bg-blue-600 hover:bg-blue-700 w-full" size="lg">
