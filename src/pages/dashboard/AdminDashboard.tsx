@@ -22,6 +22,7 @@ import { apiService } from '@/services/api';
 import { useToast } from '@/hooks/use-toast';
 import { DeliveryUpload } from '@/components/delivery/DeliveryUpload';
 import { supabase } from '@/integrations/supabase/client';
+import { todayBrt } from '@/lib/date';
 
 interface DriverLoadStatus {
   id: string;
@@ -104,7 +105,7 @@ export const AdminDashboard = () => {
   }, [toast]);
 
   const loadDriverLoadStatuses = async (deliveriesFromKpis?: any[]) => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = todayBrt();
     const response = deliveriesFromKpis ? null : await apiService.getDeliveries({ scheduled_date: today });
 
     if (deliveriesFromKpis || (response?.success && response.data)) {
@@ -157,7 +158,7 @@ export const AdminDashboard = () => {
   };
 
   const loadDailyOccurrences = async () => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = todayBrt();
     const response = await apiService.getOccurrences({ date: today });
 
     if (response.success && response.data) {
@@ -428,7 +429,7 @@ export const AdminDashboard = () => {
       </Card>
 
       {/* Tabela de Ocorrências do Dia */}
-      <Card className="glass-card border-white/5">
+      <Card className="glass-card border-white/5" data-testid="daily-occurrences">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <AlertTriangle className="h-5 w-5" />
@@ -456,7 +457,7 @@ export const AdminDashboard = () => {
                     const iconColor = isReentrega ? 'text-yellow-600' : isRefusal ? 'text-red-600' : 'text-gray-600';
 
                     return (
-                      <TableRow key={occurrence.id} className="hover:bg-muted/30">
+                      <TableRow key={occurrence.id} className="hover:bg-muted/30" data-testid="admin-occurrence-row">
                         <TableCell className="font-medium">{occurrence.driver_name}</TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">

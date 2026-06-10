@@ -7,7 +7,6 @@ import { ClientDashboard } from './ClientDashboard';
 import { MasterDashboard } from './MasterDashboard';
 import { LiveTracking } from '@/components/tracking/LiveTracking';
 import { ReceiptUpload } from '@/components/receipts/ReceiptUpload';
-import { OccurrenceManager } from '@/components/occurrences/OccurrenceManager';
 
 export const Dashboard: React.FC = () => {
   const { user } = useAuth();
