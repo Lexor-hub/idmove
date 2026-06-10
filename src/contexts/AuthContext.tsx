@@ -20,6 +20,9 @@ const clearStoredAuth = () => {
   localStorage.removeItem('temp_user');
 };
 
+const isDriverWithoutOperationalLink = (userData: User) =>
+  normalizeRole(userData.user_type || userData.role) === 'DRIVER' && !userData.driver_id;
+
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (!context) {
@@ -36,25 +39,44 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const { toast } = useToast();
 
   useEffect(() => {
-    // Check for stored auth data on app load
-    const token = localStorage.getItem('id_move_token');
-    const userData = localStorage.getItem('id_move_user');
-    const companyData = localStorage.getItem('id_move_company');
-    
-    console.log('Verificando dados de autenticação...');
-    console.log('Token presente:', !!token);
-    console.log('User data presente:', !!userData);
-    
-    if (token && userData) {
+    const restoreAuth = async () => {
+      // Check for stored auth data on app load
+      const token = localStorage.getItem('id_move_token');
+      const userData = localStorage.getItem('id_move_user');
+      const companyData = localStorage.getItem('id_move_company');
+
+      console.log('Verificando dados de autenticação...');
+      console.log('Token presente:', !!token);
+      console.log('User data presente:', !!userData);
+
+      if (!token || !userData) {
+        setAuthStep('login');
+        setLoading(false);
+        return;
+      }
+
       try {
         const parsedUser = JSON.parse(userData);
-        const restoredUser = mapUser(parsedUser);
+        let restoredUser = mapUser(parsedUser);
+        let restoredCompany = companyData ? JSON.parse(companyData) : null;
+
+        if (isDriverWithoutOperationalLink(restoredUser)) {
+          const refreshed = await apiService.refreshCurrentSession();
+          if (refreshed.success && refreshed.data) {
+            restoredUser = mapUser(refreshed.data.user);
+            restoredCompany = refreshed.data.company || restoredCompany;
+            localStorage.setItem('id_move_user', JSON.stringify(restoredUser));
+            if (restoredCompany) {
+              localStorage.setItem('id_move_company', JSON.stringify(restoredCompany));
+            }
+          }
+        }
+
         console.log('Usuário carregado:', restoredUser);
         setUser(restoredUser);
-        if (companyData) {
-          const parsedCompany = JSON.parse(companyData);
-          console.log('Empresa carregada:', parsedCompany);
-          setCompany(parsedCompany);
+        if (restoredCompany) {
+          console.log('Empresa carregada:', restoredCompany);
+          setCompany(restoredCompany);
           setAuthStep('complete');
         } else {
           // Se tem token mas não tem empresa, precisa selecionar
@@ -64,12 +86,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.error('Erro ao carregar dados do usuário:', error);
         clearStoredAuth();
         setAuthStep('login');
+      } finally {
+        setLoading(false);
       }
-    } else {
-      setAuthStep('login');
-    }
-    
-    setLoading(false);
+    };
+
+    void restoreAuth();
   }, []);
 
   const login = async (credentials: LoginCredentials) => {

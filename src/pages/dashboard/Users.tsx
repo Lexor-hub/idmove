@@ -311,7 +311,6 @@ export const Users = () => {
 
       const normalizedStatus = (formData.status || 'ATIVO').toUpperCase() === 'INATIVO' ? 'INATIVO' : 'ATIVO';
       const updatePayload = {
-        email: formData.email,
         full_name: formData.name,
         username: formData.username,
         user_type: formData.role,
@@ -525,8 +524,8 @@ export const Users = () => {
                   type="password"
                   value={formData.password}
                   onChange={(e) => setFormData(prev => ({ ...prev, password: e.target.value }))}
-                  placeholder="Digite a senha (mínimo 6 caracteres)"
-                  minLength={6}
+                  placeholder="8+ chars, maiúscula, minúscula e número"
+                  minLength={8}
                   required
                 />
               </div>
@@ -730,8 +729,10 @@ export const Users = () => {
                 id="edit-email"
                 type="email"
                 value={formData.email}
-                onChange={(e) => setFormData(prev => ({ ...prev, email: e.target.value }))}
+                disabled
+                className="bg-muted"
               />
+              <p className="text-xs text-muted-foreground">Email não pode ser alterado</p>
             </div>
             <div className="grid gap-2">
               <Label htmlFor="edit-role">Perfil</Label>

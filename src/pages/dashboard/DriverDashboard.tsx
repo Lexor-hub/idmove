@@ -77,6 +77,9 @@ type NavigatorWithWakeLock = Navigator & {
     };
 };
 
+const OCCURRENCE_PHOTO_MAX_SIZE = 5 * 1024 * 1024;
+const OCCURRENCE_PHOTO_ALLOWED_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+
 export const DriverDashboard = () => {
     const [deliveries, setDeliveries] = useState<Delivery[]>([]);
     const [routeStarted, setRouteStarted] = useState(false);
@@ -933,6 +936,14 @@ const handleDisableLocation = () => {
     };
 
     const handleOpenOccurrence = (delivery: Delivery) => {
+        if (!resolveDriverId()) {
+            toast({
+                title: 'Motorista não vinculado',
+                description: 'Seu acesso ainda não está ligado ao cadastro operacional. Avise o administrador antes de sair em rota.',
+                variant: 'destructive',
+            });
+            return;
+        }
         setOccurrenceDelivery(delivery);
         setOccurrenceType('reentrega');
         setOccurrenceDescription('');
@@ -943,6 +954,26 @@ const handleDisableLocation = () => {
     const handleOccurrencePhotoCapture = (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
         if (file) {
+            if (!OCCURRENCE_PHOTO_ALLOWED_TYPES.has(file.type)) {
+                toast({
+                    title: 'Foto inválida',
+                    description: 'Envie uma imagem JPG, PNG ou WEBP.',
+                    variant: 'destructive',
+                });
+                event.target.value = '';
+                return;
+            }
+
+            if (file.size > OCCURRENCE_PHOTO_MAX_SIZE) {
+                toast({
+                    title: 'Foto muito grande',
+                    description: 'A foto da ocorrência deve ter no máximo 5 MB.',
+                    variant: 'destructive',
+                });
+                event.target.value = '';
+                return;
+            }
+
             const reader = new FileReader();
             reader.onload = (e) => {
                 setOccurrencePhoto({ file, dataUrl: e.target?.result as string });
@@ -957,6 +988,15 @@ const handleDisableLocation = () => {
             toast({
                 title: 'Observação obrigatória',
                 description: 'Descreva o que impediu a entrega.',
+                variant: 'destructive',
+            });
+            return;
+        }
+
+        if (!resolveDriverId()) {
+            toast({
+                title: 'Motorista não vinculado',
+                description: 'Seu acesso ainda não está ligado ao cadastro operacional. Avise o administrador antes de registrar ocorrências.',
                 variant: 'destructive',
             });
             return;
@@ -1378,7 +1418,7 @@ const handleDisableLocation = () => {
 
                             {deliveries.map((delivery) => (
 
-                                <Card key={delivery.id} className="border">
+                                <Card key={delivery.id} className="border" data-testid="entrega-pendente">
                                     <CardContent className="pt-4">
 
                                         {/* Bloco de NF, Nome e Status */}
@@ -1421,7 +1461,12 @@ const handleDisableLocation = () => {
                                                     </Button>
                                                 )}
                                                 {!delivery.hasReceipt && delivery.originalApiStatus !== 'DELIVERED' && delivery.originalApiStatus !== 'FAILED' && (
-                                                    <Button size="sm" variant="destructive" onClick={() => handleOpenOccurrence(delivery)}>
+                                                    <Button
+                                                        size="sm"
+                                                        variant="destructive"
+                                                        onClick={() => handleOpenOccurrence(delivery)}
+                                                        data-testid="report-occurrence"
+                                                    >
                                                         <AlertTriangle className="mr-1 h-4 w-4" />
                                                         Ocorrência
                                                     </Button>
@@ -1711,6 +1756,8 @@ const handleDisableLocation = () => {
                         <div className="space-y-2">
                             <label className="text-sm font-medium">Observação</label>
                             <Textarea
+                                name="observacao"
+                                data-testid="occurrence-description"
                                 value={occurrenceDescription}
                                 onChange={(event) => setOccurrenceDescription(event.target.value)}
                                 placeholder="Ex: destinatário ausente, estabelecimento fechado, mercadoria recusada..."
@@ -1774,7 +1821,12 @@ const handleDisableLocation = () => {
                         <Button variant="outline" onClick={() => setShowOccurrenceModal(false)} disabled={reportingOccurrence}>
                             Cancelar
                         </Button>
-                        <Button onClick={handleReportOccurrence} disabled={reportingOccurrence || !occurrenceDescription.trim()}>
+                        <Button
+                            type="button"
+                            onClick={handleReportOccurrence}
+                            disabled={reportingOccurrence || !occurrenceDescription.trim()}
+                            data-testid="submit-occurrence"
+                        >
                             {reportingOccurrence ? 'Enviando...' : 'Registrar e Reagendar'}
                         </Button>
                     </DialogFooter>

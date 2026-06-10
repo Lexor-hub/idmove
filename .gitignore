@@ -32,6 +32,11 @@ dist-ssr
 # Supabase CLI temp files
 supabase/.temp/
 
+# Local agent workspaces
+.claude/agents/
+.claude/skills/
+.claude/worktrees/
+
 # Android native build (managed separately)
 android/
 

@@ -1,7 +1,6 @@
 import { supabase, requireSupabaseConfig } from '@/integrations/supabase/client';
 import type { CompanyRow, DeliveryStatus, DriverStatus, ProfileRow } from '@/integrations/supabase/types';
 import { todayBrt } from '@/lib/date';
-import { buildRetryDeliveryPayload, getNextScheduledDate } from '@/lib/delivery-attempts';
 import { normalizeBrazilianDocument } from '@/lib/documents';
 import { normalizeRole } from '@/lib/roles';
 
@@ -469,6 +468,18 @@ class ApiService {
         token: sessionData.session?.access_token || '',
         user: this.profileToUser(context.profile, selectedCompany, context.driverId, context.clientId),
         company: selectedCompany,
+      };
+    });
+  }
+
+  async refreshCurrentSession() {
+    return this.run(async () => {
+      const context = await this.getContext(true);
+      const { data: sessionData } = await supabase.auth.getSession();
+      return {
+        token: sessionData.session?.access_token || '',
+        user: this.profileToUser(context.profile, context.company, context.driverId, context.clientId),
+        company: context.company,
       };
     });
   }
@@ -1596,40 +1607,8 @@ class ApiService {
       const context = await this.getContext();
       const companyId = context.profile.company_id;
       if (!companyId) throw new Error('Empresa nao identificada.');
-
-      const { data: originalDelivery, error: deliveryError } = await supabase
-        .from('deliveries')
-        .select('*')
-        .eq('id', String(deliveryId))
-        .eq('company_id', companyId)
-        .single();
-      if (deliveryError) throw deliveryError;
-
-      // Dedup: se já existe ocorrência igual (mesmo motorista + entrega + descrição)
-      // criada nos últimos 2 minutos, retorna a existente em vez de duplicar.
-      // Cenário em prod (03/06/2026): Rafael clicou "Registrar" 2x porque rede ruim
-      // não confirmou na primeira; ocorrências duplicaram em 7-11s.
-      if (context.driverId) {
-        const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
-        const { data: recente } = await supabase
-          .from('occurrences')
-          .select('*')
-          .eq('delivery_id', String(deliveryId))
-          .eq('driver_id', context.driverId)
-          .eq('description', payload.description)
-          .gte('created_at', twoMinAgo)
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        if (recente) {
-          return {
-            ...recente,
-            rescheduled_delivery_id: recente.rescheduled_delivery_id || null,
-            next_scheduled_date: recente.next_scheduled_date || null,
-            retry_delivery: null,
-            _deduped: true,
-          };
-        }
+      if (!context.driverId) {
+        throw new Error('Motorista nao vinculado ao cadastro operacional. Avise o administrador antes de sair em rota.');
       }
 
       let photoPath: string | null = null;
@@ -1640,58 +1619,19 @@ class ApiService {
         photoUrl = upload.url;
       }
 
-      const { data, error } = await supabase
-        .from('occurrences')
-        .insert({
-          company_id: companyId,
-          delivery_id: String(deliveryId),
-          driver_id: context.driverId,
-          type: payload.type,
-          description: payload.description,
-          photo_path: photoPath,
-          photo_url: photoUrl,
-          latitude: payload.latitude || null,
-          longitude: payload.longitude || null,
-        })
-        .select()
-        .single();
+      const { data, error } = await supabase.rpc('report_delivery_occurrence', {
+        p_delivery_id: String(deliveryId),
+        p_type: payload.type,
+        p_description: payload.description,
+        p_photo_path: photoPath,
+        p_photo_url: photoUrl,
+        p_latitude: payload.latitude || null,
+        p_longitude: payload.longitude || null,
+        p_reschedule: payload.reschedule !== false,
+        p_next_scheduled_date: payload.next_scheduled_date || null,
+      });
       if (error) throw error;
-
-      await supabase.from('deliveries').update({ status: 'FAILED' }).eq('id', String(deliveryId));
-
-      let retryDelivery: ApiDelivery | null = null;
-      if (payload.reschedule !== false) {
-        const nextScheduledDate = payload.next_scheduled_date || getNextScheduledDate(originalDelivery);
-        const retryPayload = buildRetryDeliveryPayload(originalDelivery, {
-          occurrenceId: String(data.id),
-          nextScheduledDate,
-          description: payload.description || '',
-        });
-
-        const { data: retryData, error: retryError } = await supabase
-          .from('deliveries')
-          .insert(retryPayload)
-          .select()
-          .single();
-        if (retryError) throw retryError;
-
-        await supabase
-          .from('occurrences')
-          .update({
-            rescheduled_delivery_id: retryData.id,
-            next_scheduled_date: nextScheduledDate,
-          })
-          .eq('id', data.id);
-
-        retryDelivery = this.mapDelivery(retryData);
-      }
-
-      return {
-        ...data,
-        rescheduled_delivery_id: retryDelivery?.id || null,
-        next_scheduled_date: retryDelivery?.scheduled_date || null,
-        retry_delivery: retryDelivery,
-      };
+      return data as ApiDelivery;
     });
   }
 

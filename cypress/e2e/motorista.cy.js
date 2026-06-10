@@ -39,10 +39,10 @@ describe('Motorista - Fluxo Completo', () => {
     cy.contains('Iniciar Dia').click();
     cy.contains('Iniciar Rota').click();
     cy.get('[data-testid="entrega-pendente"]').first().within(() => {
-      cy.contains('Problema').click();
+      cy.get('[data-testid="report-occurrence"]').click();
     });
-    cy.get('textarea[name="observacao"]').type('Destinatário ausente');
-    cy.get('button[type="submit"]').click();
+    cy.get('[data-testid="occurrence-description"]').type('Destinatário ausente');
+    cy.get('[data-testid="submit-occurrence"]').click();
     cy.contains('Ocorrência registrada');
   });
 
@@ -68,4 +68,4 @@ describe('Motorista - Fluxo Completo', () => {
     cy.goOnline();
     cy.contains('Sincronização concluída');
   });
-}); 
+});

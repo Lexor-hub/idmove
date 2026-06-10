@@ -2,14 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { apiService } from '@/services/api';
-import { AlertTriangle, Camera, MapPin, Calendar, User, FileText, Plus, Eye } from 'lucide-react';
+import { AlertTriangle, Calendar, User, FileText, Eye } from 'lucide-react';
 
 interface Occurrence {
   id: string;
@@ -22,24 +21,11 @@ interface Occurrence {
   created_at: string;
 }
 
-interface OccurrenceFormData {
-  type: 'reentrega' | 'recusa' | 'avaria';
-  description: string;
-  photo?: File;
-  latitude?: number;
-  longitude?: number;
-}
-
 export const OccurrenceManager: React.FC = () => {
   const { toast } = useToast();
   const [occurrences, setOccurrences] = useState<Occurrence[]>([]);
   const [loading, setLoading] = useState(false);
-  const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [selectedOccurrence, setSelectedOccurrence] = useState<Occurrence | null>(null);
-  const [formData, setFormData] = useState<OccurrenceFormData>({
-    type: 'reentrega',
-    description: ''
-  });
   const [filters, setFilters] = useState({
     type: '',
     start_date: '',
@@ -72,42 +58,6 @@ export const OccurrenceManager: React.FC = () => {
       });
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleCreateOccurrence = async (deliveryId: string) => {
-    if (!formData.description.trim()) {
-      toast({
-        title: "Descrição obrigatória",
-        description: "Por favor, informe uma descrição para a ocorrência",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    try {
-      const response = await apiService.createOccurrence(deliveryId, formData);
-      if (response.success) {
-        toast({
-          title: "Ocorrência criada",
-          description: "Ocorrência registrada com sucesso",
-        });
-        setShowCreateDialog(false);
-        setFormData({ type: 'reentrega', description: '' });
-        loadOccurrences();
-      } else {
-        toast({
-          title: "Erro ao criar ocorrência",
-          description: response.error,
-          variant: "destructive",
-        });
-      }
-    } catch (error) {
-      toast({
-        title: "Erro ao criar ocorrência",
-        description: "Erro ao registrar ocorrência",
-        variant: "destructive",
-      });
     }
   };
 
@@ -148,81 +98,14 @@ export const OccurrenceManager: React.FC = () => {
     });
   };
 
-  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      // Validar tipo de arquivo
-      const allowedTypes = ['image/jpeg', 'image/png'];
-      if (!allowedTypes.includes(file.type)) {
-        toast({
-          title: "Tipo de arquivo não suportado",
-          description: "Apenas JPG e PNG são aceitos",
-          variant: "destructive",
-        });
-        return;
-      }
-
-      // Validar tamanho (5MB)
-      const maxSize = 5 * 1024 * 1024;
-      if (file.size > maxSize) {
-        toast({
-          title: "Arquivo muito grande",
-          description: "O arquivo deve ter no máximo 5MB",
-          variant: "destructive",
-        });
-        return;
-      }
-
-      setFormData(prev => ({ ...prev, photo: file }));
-    }
-  };
-
-  const getCurrentLocation = () => {
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          setFormData(prev => ({
-            ...prev,
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude
-          }));
-          toast({
-            title: "Localização obtida",
-            description: "Coordenadas capturadas com sucesso",
-          });
-        },
-        (error) => {
-          toast({
-            title: "Erro ao obter localização",
-            description: "Não foi possível obter sua localização",
-            variant: "destructive",
-          });
-        }
-      );
-    } else {
-      toast({
-        title: "Geolocalização não suportada",
-        description: "Seu navegador não suporta geolocalização",
-        variant: "destructive",
-      });
-    }
-  };
-
   return (
     <div className="space-y-6">
       {/* Cabeçalho */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <h2 className="text-2xl font-bold">Gestão de Ocorrências</h2>
-          <Badge variant="outline">
-            {occurrences.length} ocorrência{occurrences.length !== 1 ? 's' : ''}
-          </Badge>
-        </div>
-        
-        <Button onClick={() => setShowCreateDialog(true)}>
-          <Plus className="h-4 w-4 mr-2" />
-          Nova Ocorrência
-        </Button>
+      <div className="flex items-center gap-4">
+        <h2 className="text-2xl font-bold">Gestão de Ocorrências</h2>
+        <Badge variant="outline">
+          {occurrences.length} ocorrência{occurrences.length !== 1 ? 's' : ''}
+        </Badge>
       </div>
 
       {/* Filtros */}
@@ -347,90 +230,6 @@ export const OccurrenceManager: React.FC = () => {
           </div>
         )}
       </div>
-
-      {/* Dialog de Criar Ocorrência */}
-      <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Nova Ocorrência</DialogTitle>
-          </DialogHeader>
-          
-          <div className="space-y-4">
-            <div>
-              <Label>Tipo de Ocorrência</Label>
-              <Select
-                value={formData.type}
-                onValueChange={(value: 'reentrega' | 'recusa' | 'avaria') => 
-                  setFormData(prev => ({ ...prev, type: value }))
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="reentrega">Reentrega</SelectItem>
-                  <SelectItem value="recusa">Recusa</SelectItem>
-                  <SelectItem value="avaria">Avaria</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            
-            <div>
-              <Label>Descrição</Label>
-              <Textarea
-                placeholder="Descreva a ocorrência..."
-                value={formData.description}
-                onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
-                rows={3}
-              />
-            </div>
-            
-            <div>
-              <Label>Foto (opcional)</Label>
-              <Input
-                type="file"
-                accept="image/*"
-                onChange={handleFileSelect}
-              />
-            </div>
-            
-            <div className="flex gap-2">
-              <Button
-                onClick={getCurrentLocation}
-                variant="outline"
-                size="sm"
-                className="flex-1"
-              >
-                <MapPin className="h-4 w-4 mr-2" />
-                Capturar Localização
-              </Button>
-            </div>
-            
-            {formData.latitude && formData.longitude && (
-              <div className="p-2 bg-green-50 rounded-md">
-                <p className="text-sm text-green-800">
-                  Localização capturada: {formData.latitude.toFixed(6)}, {formData.longitude.toFixed(6)}
-                </p>
-              </div>
-            )}
-            
-            <div className="flex gap-2 justify-end">
-              <Button
-                onClick={() => setShowCreateDialog(false)}
-                variant="outline"
-              >
-                Cancelar
-              </Button>
-              <Button
-                onClick={() => handleCreateOccurrence('delivery-id-placeholder')}
-                disabled={!formData.description.trim()}
-              >
-                Criar Ocorrência
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       {/* Dialog de Detalhes da Ocorrência */}
       <Dialog open={!!selectedOccurrence} onOpenChange={() => setSelectedOccurrence(null)}>
