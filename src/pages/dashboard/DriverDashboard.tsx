@@ -315,7 +315,14 @@ export const DriverDashboard = () => {
     }, [resolveDriverId]);
 
     const startLocationTracking = useCallback(async () => {
-        const driverId = resolveDriverId();
+        // Resolve o driver_id na hora: se a sessão não trouxe e o auto-recuperar
+        // de fundo ainda não terminou, busca inline no backend ANTES de falhar.
+        // Sem isso havia race: o 1º clique falhava e só o 2º funcionava.
+        let driverId = resolveDriverId();
+        if (!driverId) {
+            driverId = await apiService.getCurrentDriverId();
+            if (driverId) setResolvedDriverId(driverId);
+        }
         if (!driverId) {
             toast({
                 title: 'Motorista não identificado',
