@@ -393,6 +393,8 @@ class ApiService {
       image_url: receiptUrl,
       source_document_url: sourceDocUrl,
       delivery_date: raw.delivered_at || raw.updated_at || raw.created_at,
+      delivered_at: raw.delivered_at || null,
+      created_by_name: raw.created_by_name || null,
       original_delivery_id: raw.original_delivery_id || null,
       attempt_number: Number(raw.attempt_number || 1),
       rescheduled_from_occurrence_id: raw.rescheduled_from_occurrence_id || null,
@@ -864,6 +866,19 @@ class ApiService {
     });
   }
 
+  // Saúde dos motoristas: lista vínculos quebrados (motorista↔perfil↔empresa)
+  // que causam falha em iniciar rota / cadastrar. Read-only, não altera nada.
+  // Sem data => motoristas ATIVOS; com data => também os roteirizados no dia.
+  async getDriverIntegrity(targetDate?: string): Promise<ApiResponse<any[]>> {
+    return this.run(async () => {
+      const { data, error } = await supabase.rpc('audit_driver_integrity', {
+        p_target_date: targetDate || null,
+      });
+      if (error) throw error;
+      return (data || []) as any[];
+    });
+  }
+
   async createDelivery(payload: Record<string, any>) {
     return this.run(async () => {
       const context = await this.getContext();
@@ -951,6 +966,8 @@ class ApiService {
           notes: payload.notes || summary.observations || null,
           status: driverId ? 'ASSIGNED' : 'PENDING',
           source_document_path: sourceDocumentPath,
+          created_by_profile_id: context.profile.id,
+          created_by_name: context.profile.full_name || null,
         })
         .select()
         .single();
@@ -1743,7 +1760,7 @@ class ApiService {
       const companyId = context.profile.company_id;
       if (!companyId) throw new Error('Empresa nao identificada.');
 
-      const { data, error } = await supabase
+      let { data, error } = await supabase
         .from('deliveries')
         .update({
           status: newStatus,
@@ -1754,6 +1771,18 @@ class ApiService {
         .single();
 
       if (error) throw error;
+
+      // Consistência: na finalização manual grava delivered_at se ainda nulo.
+      // Hoje só o upload de canhoto preenche delivered_at — não sobrescrevemos o que ele já gravou.
+      if (newStatus === 'DELIVERED' && data && !data.delivered_at) {
+        const { data: patched } = await supabase
+          .from('deliveries')
+          .update({ delivered_at: new Date().toISOString() })
+          .eq('id', String(deliveryId))
+          .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,notes,created_at)')
+          .single();
+        if (patched) data = patched;
+      }
 
       // Write event to delivery_events
       await supabase.from('delivery_events').insert({

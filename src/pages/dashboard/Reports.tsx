@@ -25,6 +25,8 @@ interface DeliveryReportItem {
   delivery_address?: string | null;
   source_document_url?: string | null;
   has_receipt?: boolean;
+  created_by_name?: string | null;
+  delivered_at?: string | null;
 }
 
 const DeliveriesReportTab = () => {
@@ -83,15 +85,17 @@ const DeliveriesReportTab = () => {
       toast({ title: "Nenhum dado para exportar." });
       return;
     }
-    const headers = ['ID Entrega', 'NF', 'Cliente', 'Motorista', 'Data Criacao', 'Data Atualizacao', 'Data Agendada', 'Status', 'Endereco', 'Possui Canhoto', 'URL NF-e'];
+    const headers = ['ID Entrega', 'NF', 'Cliente', 'Motorista', 'Criado por', 'Data Criacao', 'Data Atualizacao', 'Data Agendada', 'Entregue em', 'Status', 'Endereco', 'Possui Canhoto', 'URL NF-e'];
     const rows = filteredDeliveries.map((delivery) => [
       delivery.id,
       delivery.nf_number || '',
       delivery.client_name || '',
       delivery.driver_name || '',
+      delivery.created_by_name || '',
       formatCsvDateTime(delivery.created_at),
       formatCsvDateTime(delivery.updated_at || delivery.created_at),
       delivery.scheduled_date ? new Date(`${delivery.scheduled_date}T00:00:00`).toLocaleDateString('pt-BR') : '',
+      delivery.delivered_at ? formatCsvDateTime(delivery.delivered_at) : '',
       delivery.status || '',
       delivery.delivery_address || '',
       delivery.has_receipt ? 'Sim' : 'Nao',
@@ -137,24 +141,28 @@ const DeliveriesReportTab = () => {
               <TableRow>
                 <TableHead>NF</TableHead>
                 <TableHead>Cliente</TableHead>
+                <TableHead>Criado por</TableHead>
                 <TableHead>Data</TableHead>
+                <TableHead>Entregue em</TableHead>
                 <TableHead>Status</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading ? (
-                <TableRow><TableCell colSpan={4} className="h-24 text-center"><Loader2 className="h-6 w-6 animate-spin mx-auto" /></TableCell></TableRow>
+                <TableRow><TableCell colSpan={6} className="h-24 text-center"><Loader2 className="h-6 w-6 animate-spin mx-auto" /></TableCell></TableRow>
               ) : paginatedDeliveries.length > 0 ? (
                 paginatedDeliveries.map((d) => (
                   <TableRow key={d.id}>
                     <TableCell className="font-medium">{d.nf_number || 'N/A'}</TableCell>
                     <TableCell>{d.client_name || 'N/A'}</TableCell>
+                    <TableCell>{d.created_by_name || '—'}</TableCell>
                     <TableCell>{new Date(d.updated_at || d.created_at).toLocaleDateString('pt-BR')}</TableCell>
+                    <TableCell>{d.delivered_at ? new Date(d.delivered_at).toLocaleString('pt-BR') : '—'}</TableCell>
                     <TableCell>{getStatusBadge(d.status)}</TableCell>
                   </TableRow>
                 ))
               ) : (
-                <TableRow><TableCell colSpan={4} className="h-24 text-center">Nenhum resultado encontrado.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={6} className="h-24 text-center">Nenhum resultado encontrado.</TableCell></TableRow>
               )}
             </TableBody>
           </Table>
@@ -804,23 +812,114 @@ const PerformanceReportTab = () => {
   );
 };
 
+const DRIVER_ISSUE_LABELS: Record<string, string> = {
+  DRIVER_SEM_PROFILE_ID: 'Motorista sem perfil vinculado',
+  PROFILE_NAO_ENCONTRADO: 'Perfil não encontrado',
+  PROFILE_SEM_AUTH_USER: 'Perfil sem login (auth) vinculado',
+  AUTH_USER_NAO_ENCONTRADO: 'Login (auth) não encontrado',
+  PROFILE_ROLE_NAO_DRIVER: 'Perfil não está como MOTORISTA',
+  PROFILE_SEM_EMPRESA: 'Perfil sem empresa',
+  EMPRESA_DIVERGENTE_DRIVER_PROFILE: 'Empresa do motorista difere da do perfil',
+  EMPRESA_DIVERGENTE_DRIVER_DELIVERY: 'Empresa do motorista difere da da entrega',
+};
+
+interface DriverIntegrityItem {
+  driver_id: string;
+  driver_name: string;
+  issue: string;
+}
+
+const DriverHealthTab = () => {
+  const [items, setItems] = useState<DriverIntegrityItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const { toast } = useToast();
+
+  const fetchHealth = async () => {
+    setLoading(true);
+    try {
+      const response = await apiService.getDriverIntegrity();
+      if (response.success && Array.isArray(response.data)) {
+        setItems(response.data as DriverIntegrityItem[]);
+      } else {
+        toast({ title: 'Erro ao verificar motoristas', description: response.error || 'Falha na verificação.', variant: 'destructive' });
+      }
+    } catch (error: any) {
+      toast({ title: 'Erro de Conexão', description: error.message, variant: 'destructive' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchHealth(); }, []);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <AlertTriangle className="h-5 w-5" /> Saúde dos Motoristas
+        </CardTitle>
+        <p className="text-sm text-muted-foreground mt-1">
+          Motoristas com vínculo quebrado podem falhar ao iniciar rota ou cadastrar. Verifique antes de mandar para a rua.
+        </p>
+        <div className="flex justify-end mt-2">
+          <Button variant="outline" size="sm" onClick={fetchHealth} disabled={loading}>
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Verificar de novo'}
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {loading ? (
+          <div className="h-24 flex items-center justify-center"><Loader2 className="h-6 w-6 animate-spin" /></div>
+        ) : items.length === 0 ? (
+          <div className="rounded-md border border-green-500/40 bg-green-500/10 p-4 text-sm text-green-700 dark:text-green-400">
+            ✅ Todos os motoristas estão com vínculo íntegro. Nenhum risco detectado para iniciar rota.
+          </div>
+        ) : (
+          <div className="rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Motorista</TableHead>
+                  <TableHead>Problema detectado</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {items.map((item) => (
+                  <TableRow key={`${item.driver_id}-${item.issue}`}>
+                    <TableCell className="font-medium">{item.driver_name || 'Sem nome'}</TableCell>
+                    <TableCell>
+                      <Badge variant="destructive">{DRIVER_ISSUE_LABELS[item.issue] || item.issue}</Badge>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
 const Reports = () => {
   return (
     <main className="container mx-auto px-4 py-6 space-y-6">
       <h1 className="text-3xl font-bold tracking-tight">Relatórios</h1>
       <Tabs defaultValue="deliveries" className="w-full">
-        <TabsList className="grid w-full grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
+        <TabsList className="grid w-full grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
           <TabsTrigger value="deliveries">Entregas</TabsTrigger>
           <TabsTrigger value="nfes">NF-es</TabsTrigger>
           <TabsTrigger value="occurrences">Ocorrências</TabsTrigger>
           <TabsTrigger value="receipts">Comprovantes</TabsTrigger>
           <TabsTrigger value="performance">Desempenho</TabsTrigger>
+          <TabsTrigger value="driver-health">Motoristas</TabsTrigger>
         </TabsList>
         <TabsContent value="deliveries" className="mt-4"><DeliveriesReportTab /></TabsContent>
         <TabsContent value="nfes" className="mt-4"><NfeReportTab /></TabsContent>
         <TabsContent value="occurrences" className="mt-4"><OccurrencesReportTab /></TabsContent>
         <TabsContent value="receipts" className="mt-4"><ReceiptsReportTab /></TabsContent>
         <TabsContent value="performance" className="mt-4"><PerformanceReportTab /></TabsContent>
+        <TabsContent value="driver-health" className="mt-4"><DriverHealthTab /></TabsContent>
       </Tabs>
     </main>
   );
