@@ -1075,6 +1075,19 @@ class ApiService {
     });
   }
 
+  // Resolve o driver_id da sessão atual direto do backend (profiles -> drivers).
+  // Usado como auto-recuperação quando o objeto de usuário em memória/localStorage
+  // não traz driver_id (sessão antiga, criada antes do vínculo). Garante que
+  // iniciar rota/rastreamento e registrar ocorrência não falhem por isso.
+  async getCurrentDriverId(): Promise<string | null> {
+    try {
+      const ctx = await this.getContext();
+      return ctx.driverId ? String(ctx.driverId) : null;
+    } catch {
+      return null;
+    }
+  }
+
   async startDriverTracking(driverId: string | number, platform?: string) {
     return this.run(async () => {
       const { data, error } = await supabase.rpc('start_driver_tracking', {

@@ -90,13 +90,32 @@ export const DriverDashboard = () => {
     const { user } = useAuth();
     const { toast } = useToast();
 
+    // Auto-recuperação do driver_id: se a sessão (user) não trouxe driver_id
+    // — caso de sessão antiga criada antes do vínculo operacional — busca no
+    // backend uma vez. Sem isso, iniciar rota/rastreamento e registrar
+    // ocorrência falhavam com "Motorista não identificado" mesmo o motorista
+    // estando corretamente vinculado no banco.
+    const [resolvedDriverId, setResolvedDriverId] = useState<string | null>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        if (!user?.driver_id) {
+            apiService.getCurrentDriverId()
+                .then((id) => {
+                    if (!cancelled && id) setResolvedDriverId(id);
+                })
+                .catch(() => { /* mantém null; resolveDriverId trata */ });
+        }
+        return () => { cancelled = true; };
+    }, [user?.driver_id]);
+
     const resolveDriverId = useCallback(() => {
-        const idValue = user?.driver_id;
+        const idValue = user?.driver_id ?? resolvedDriverId;
         if (idValue === undefined || idValue === null) {
             return null;
         }
         return idValue.toString();
-    }, [user]);
+    }, [user, resolvedDriverId]);
 
     const [showDeliveryUpload, setShowDeliveryUpload] = useState(false);
     const [showAddDelivery, setShowAddDelivery] = useState(false);
@@ -155,7 +174,7 @@ export const DriverDashboard = () => {
     const [wakeLockUnavailable, setWakeLockUnavailable] = useState(false);
     const [lastKnownPosition, setLastKnownPosition] = useState<DriverTrackingPosition | null>(null);
 
-    const driverIdForTracking = user?.driver_id || '';
+    const driverIdForTracking = user?.driver_id || resolvedDriverId || '';
 
     const releaseWakeLock = useCallback(async () => {
         const sentinel = wakeLockRef.current;
@@ -296,7 +315,14 @@ export const DriverDashboard = () => {
     }, [resolveDriverId]);
 
     const startLocationTracking = useCallback(async () => {
-        const driverId = resolveDriverId();
+        // Resolve o driver_id na hora: se a sessão não trouxe e o auto-recuperar
+        // de fundo ainda não terminou, busca inline no backend ANTES de falhar.
+        // Sem isso havia race: o 1º clique falhava e só o 2º funcionava.
+        let driverId = resolveDriverId();
+        if (!driverId) {
+            driverId = await apiService.getCurrentDriverId();
+            if (driverId) setResolvedDriverId(driverId);
+        }
         if (!driverId) {
             toast({
                 title: 'Motorista não identificado',

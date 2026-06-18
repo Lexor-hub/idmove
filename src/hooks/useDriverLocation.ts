@@ -186,9 +186,11 @@ export function useDriverLocation({ driverId, sessionId, active, onPosition, onE
         handleError(err);
       },
       {
+        // 1ª leitura no navegador costuma demorar (diálogo de permissão + 1º fix).
+        // timeout curto fazia o "iniciar rota" falhar na primeira tentativa.
         enableHighAccuracy: true,
-        maximumAge: 0,
-        timeout: 10_000,
+        maximumAge: 15_000,
+        timeout: 30_000,
       },
     );
 
