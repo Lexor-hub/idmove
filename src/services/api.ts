@@ -1601,7 +1601,11 @@ class ApiService {
     return this.run(async () => {
       let query = supabase
         .from('occurrences')
-        .select('*, deliveries(nf_number,client_name,scheduled_date), drivers(name)')
+        // Desambiguacao obrigatoria: occurrences tem 3 FKs para deliveries
+        // (delivery_id, rescheduled_delivery_id, e deliveries.rescheduled_from_occurrence_id).
+        // Sem o hint !occurrences_delivery_id_fkey o PostgREST retorna PGRST201 e
+        // a lista de ocorrencias quebra inteira ("nao consigo visualizar ocorrencias").
+        .select('*, deliveries!occurrences_delivery_id_fkey(nf_number,client_name,scheduled_date), drivers(name)')
         .order('created_at', { ascending: false });
 
       const ctx = await this.getContext();
