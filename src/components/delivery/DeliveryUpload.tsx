@@ -868,13 +868,17 @@ const handleDocumentAIData = (input: DocumentAIParsedPayload) => {
           description: 'Leitura por IA indisponível; OCR local aplicado. Revise os dados antes de salvar.'
         });
       } catch (fallbackError) {
+        // IA e OCR falharam. O motorista NÃO fica travado: o formulário já está
+        // aberto para digitação manual (fluxo normal de contingência). Os erros
+        // técnicos vão para o console (diagnóstico), nunca para o motorista.
+        console.error('Falha na leitura automática da NF-e (IA):', error);
+        console.error('Falha na leitura automática da NF-e (OCR fallback):', fallbackError);
         setIsSefazValid(false);
-        toast({
-          title: 'Erro ao processar documento',
-          description: error instanceof Error ? error.message : 'Preencha os dados manualmente.',
-          variant: 'destructive'
-        });
         setStep('form');
+        toast({
+          title: 'Leitura automática indisponível',
+          description: 'Não foi possível ler a NF-e da foto. Preencha os dados manualmente abaixo.',
+        });
       }
     } finally {
       setLoading(false);

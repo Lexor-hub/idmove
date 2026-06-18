@@ -80,7 +80,12 @@ export const AdminDashboard = () => {
         const newStats = {
           totalEntregas: Number(kpis.today_deliveries?.total ?? kpis.total_deliveries ?? 0),
           entregasRealizadas: Number(kpis.today_deliveries?.completed ?? kpis.completed_deliveries ?? 0),
-          entregasPendentes: Number(kpis.today_deliveries?.in_progress ?? kpis.today_deliveries?.pending ?? kpis.pending_deliveries ?? 0),
+          // "Em andamento" = entregas ainda nao concluidas e nao falhas:
+          // pendentes (PENDING/ASSIGNED) + em rota (IN_TRANSIT). Antes lia so
+          // in_progress, escondendo PENDING/ASSIGNED e divergindo do total.
+          entregasPendentes:
+            Number(kpis.today_deliveries?.pending ?? kpis.pending_deliveries ?? 0) +
+            Number(kpis.today_deliveries?.in_progress ?? 0),
           ocorrencias: Number(kpis.pending_occurrences ?? 0),
           motoristasAtivos: Number(kpis.active_drivers ?? 0),
         };

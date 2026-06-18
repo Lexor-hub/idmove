@@ -104,7 +104,7 @@ export const DriverDashboard = () => {
                 .then((id) => {
                     if (!cancelled && id) setResolvedDriverId(id);
                 })
-                .catch(() => { /* mantém null; resolveDriverId trata */ });
+                .catch((err) => { console.debug('[DriverDashboard] auto-recuperar driver_id falhou:', err); });
         }
         return () => { cancelled = true; };
     }, [user?.driver_id]);

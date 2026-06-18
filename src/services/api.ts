@@ -1573,15 +1573,18 @@ class ApiService {
       });
 
       if (error) {
-        let msg = 'Serviço de leitura indisponível no momento.';
+        console.error('[extract-nfe-gemini] erro da edge function:', error);
+        let msg = error instanceof Error && error.message
+          ? error.message
+          : 'Serviço de leitura indisponível no momento.';
         try {
-          // FunctionsHttpError has a `context` Response object with the actual body
+          // FunctionsHttpError traz o body real no `context` (Response)
           if (error.context && typeof error.context.json === 'function') {
             const body = await error.context.json();
             if (body?.error) msg = body.error;
           }
-        } catch {
-          // fallback to generic message
+        } catch (parseError) {
+          console.error('[extract-nfe-gemini] não consegui ler o corpo do erro:', parseError);
         }
         throw new Error(msg);
       }
