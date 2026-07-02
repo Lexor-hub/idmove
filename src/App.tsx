@@ -2,27 +2,49 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import Login from "@/pages/Login";
-import { Dashboard } from "@/pages/dashboard";
 import React, { Suspense } from "react";
-import Users from "./pages/dashboard/Users";
-import Vehicles from "./pages/dashboard/Vehicles";
-import { CreateDelivery } from "./pages/dashboard/CreateDelivery";
-import Deliveries from "./pages/dashboard/Deliveries";
-import { UserManagement } from "./pages/dashboard/UserManagement";
-// Lazy load the Tracking component to prevent potential module conflicts
-const Tracking = React.lazy(() => import("./pages/dashboard/Tracking"));
 import NotFound from "./pages/NotFound";
-import Reports from "./pages/dashboard/Reports";
-import { Companies } from "./pages/dashboard/Companies";
-import { ReceiptsReport } from "./pages/dashboard/ReceiptsReport";
+
+const Dashboard = React.lazy(() => import("./pages/dashboard").then((module) => ({ default: module.Dashboard })));
+const Users = React.lazy(() => import("./pages/dashboard/Users"));
+const Vehicles = React.lazy(() => import("./pages/dashboard/Vehicles"));
+const CreateDelivery = React.lazy(() => import("./pages/dashboard/CreateDelivery"));
+const Deliveries = React.lazy(() => import("./pages/dashboard/Deliveries"));
+const UserManagement = React.lazy(() => import("./pages/dashboard/UserManagement"));
+const Tracking = React.lazy(() => import("./pages/dashboard/Tracking"));
+const Reports = React.lazy(() => import("./pages/dashboard/Reports"));
+const Companies = React.lazy(() => import("./pages/dashboard/Companies"));
+const ReceiptsReport = React.lazy(() => import("./pages/dashboard/ReceiptsReport").then((module) => ({ default: module.ReceiptsReport })));
 
 
 const queryClient = new QueryClient();
+
+let serviceWorkerReloading = false;
+
+if (typeof window !== "undefined" && "serviceWorker" in navigator) {
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (serviceWorkerReloading) return;
+    serviceWorkerReloading = true;
+    window.location.reload();
+  });
+}
+
+const PageFallback = () => (
+  <div className="flex items-center justify-center h-full min-h-96">
+    <div className="w-8 h-8 border-4 border-primary/30 border-t-primary rounded-full animate-spin" />
+  </div>
+);
+
+const PageSuspense = ({ children }: { children: React.ReactNode }) => (
+  <Suspense fallback={<PageFallback />}>
+    {children}
+  </Suspense>
+);
 
 // Route wrapper component to handle initial redirect
 const AppRoutes = () => {
@@ -58,7 +80,9 @@ const AppRoutes = () => {
         element={
           <ProtectedRoute>
             <DashboardLayout>
-              <Dashboard />
+              <PageSuspense>
+                <Dashboard />
+              </PageSuspense>
             </DashboardLayout>
           </ProtectedRoute>
         } 
@@ -68,7 +92,9 @@ const AppRoutes = () => {
         element={
           <ProtectedRoute>
             <DashboardLayout>
-              <Users />
+              <PageSuspense>
+                <Users />
+              </PageSuspense>
             </DashboardLayout>
           </ProtectedRoute>
         } 
@@ -78,7 +104,9 @@ const AppRoutes = () => {
         element={
           <ProtectedRoute>
             <DashboardLayout>
-              <Vehicles />
+              <PageSuspense>
+                <Vehicles />
+              </PageSuspense>
             </DashboardLayout>
           </ProtectedRoute>
         } 
@@ -88,9 +116,9 @@ const AppRoutes = () => {
         element={
           <ProtectedRoute>
             <DashboardLayout>
-              <Suspense fallback={<div className="flex items-center justify-center h-full"><div className="w-8 h-8 border-4 border-primary/30 border-t-primary rounded-full animate-spin" /></div>}>
+              <PageSuspense>
                 <Tracking />
-              </Suspense>
+              </PageSuspense>
             </DashboardLayout>
           </ProtectedRoute>
         } 
@@ -100,7 +128,9 @@ const AppRoutes = () => {
         element={
           <ProtectedRoute>
             <DashboardLayout>
-              <Reports />
+              <PageSuspense>
+                <Reports />
+              </PageSuspense>
             </DashboardLayout>
           </ProtectedRoute>
         } 
@@ -110,7 +140,9 @@ const AppRoutes = () => {
         element={
           <ProtectedRoute>
             <DashboardLayout>
-              <Companies />
+              <PageSuspense>
+                <Companies />
+              </PageSuspense>
             </DashboardLayout>
           </ProtectedRoute>
         } 
@@ -120,7 +152,9 @@ const AppRoutes = () => {
         element={
           <ProtectedRoute>
             <DashboardLayout>
-              <ReceiptsReport />
+              <PageSuspense>
+                <ReceiptsReport />
+              </PageSuspense>
             </DashboardLayout>
           </ProtectedRoute>
         }
@@ -130,7 +164,9 @@ const AppRoutes = () => {
         element={
           <ProtectedRoute>
             <DashboardLayout>
-              <Deliveries />
+              <PageSuspense>
+                <Deliveries />
+              </PageSuspense>
             </DashboardLayout>
           </ProtectedRoute>
         }
@@ -140,7 +176,9 @@ const AppRoutes = () => {
         element={
           <ProtectedRoute>
             <DashboardLayout>
-              <CreateDelivery />
+              <PageSuspense>
+                <CreateDelivery />
+              </PageSuspense>
             </DashboardLayout>
           </ProtectedRoute>
         }
@@ -150,7 +188,9 @@ const AppRoutes = () => {
         element={
           <ProtectedRoute>
             <DashboardLayout>
-              <UserManagement />
+              <PageSuspense>
+                <UserManagement />
+              </PageSuspense>
             </DashboardLayout>
           </ProtectedRoute>
         }
@@ -166,9 +206,9 @@ const App = () => (
       <AuthProvider>
         <Toaster />
         <Sonner />
-        <HashRouter>
+        <BrowserRouter>
           <AppRoutes />
-        </HashRouter>
+        </BrowserRouter>
       </AuthProvider>
     </TooltipProvider>
   </QueryClientProvider>

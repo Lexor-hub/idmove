@@ -161,16 +161,17 @@ const Login: React.FC = () => {
           <CardContent className="pt-8 pb-6 px-6">
             <form onSubmit={handleLogin} className="space-y-5">
               <div className="space-y-1.5">
-                <Label htmlFor="username" className="text-muted-foreground text-xs uppercase tracking-wider font-semibold">Usuário</Label>
+                <Label htmlFor="username" className="text-muted-foreground text-xs uppercase tracking-wider font-semibold">E-mail</Label>
                 <div className="relative group">
                   <User className="absolute left-3 top-3 h-5 w-5 text-muted-foreground group-focus-within:text-primary transition-colors" />
                   <Input
                     id="username"
-                    type="text"
+                    type="email"
+                    autoComplete="email"
                     value={credentials.username}
                     onChange={(e) => setCredentials({ ...credentials, username: e.target.value })}
                     className="pl-10 glass-input h-12"
-                    placeholder="Digite seu usuário"
+                    placeholder="Digite seu e-mail"
                     required
                   />
                 </div>

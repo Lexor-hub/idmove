@@ -1,12 +1,17 @@
-import React from 'react';
+import React, { Suspense } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { AdminDashboard } from './AdminDashboard';
-import { SupervisorDashboard } from './SupervisorDashboard';
-import { DriverDashboard } from './DriverDashboard';
-import { ClientDashboard } from './ClientDashboard';
-import { MasterDashboard } from './MasterDashboard';
-import { LiveTracking } from '@/components/tracking/LiveTracking';
-import { ReceiptUpload } from '@/components/receipts/ReceiptUpload';
+
+const AdminDashboard = React.lazy(() => import('./AdminDashboard').then((module) => ({ default: module.AdminDashboard })));
+const SupervisorDashboard = React.lazy(() => import('./SupervisorDashboard').then((module) => ({ default: module.SupervisorDashboard })));
+const DriverDashboard = React.lazy(() => import('./DriverDashboard').then((module) => ({ default: module.DriverDashboard })));
+const ClientDashboard = React.lazy(() => import('./ClientDashboard').then((module) => ({ default: module.ClientDashboard })));
+const MasterDashboard = React.lazy(() => import('./MasterDashboard'));
+
+const DashboardFallback = () => (
+  <div className="flex items-center justify-center min-h-96">
+    <div className="w-8 h-8 border-4 border-primary/30 border-t-primary rounded-full animate-spin" />
+  </div>
+);
 
 export const Dashboard: React.FC = () => {
   const { user } = useAuth();
@@ -32,41 +37,26 @@ export const Dashboard: React.FC = () => {
 
   const userRole = roleMapping[user.role || user.user_type || ''] || user.role || user.user_type || '';
 
-  // Motorista com cadastro incompleto: sem registro em `drivers`, qualquer ação dele
-  // (iniciar rota, listar entregas, enviar GPS) seria bloqueada silenciosamente pelo RLS.
-  // Mostramos tela explicativa em vez de dashboard vazio que confunde motorista e operação.
-  if (userRole === 'DRIVER' && !user.driver_id) {
-    return (
-      <div className="flex items-center justify-center min-h-screen p-6">
-        <div className="text-center max-w-md space-y-3">
-          <h2 className="text-2xl font-bold text-gray-900">Cadastro incompleto</h2>
-          <p className="text-gray-700">
-            Seu acesso de motorista ainda não está vinculado ao cadastro operacional.
-          </p>
-          <p className="text-sm text-gray-500">
-            Avise o administrador da transportadora para concluir seu cadastro. Assim que
-            for ajustado, faça logout e login novamente.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
+  let dashboard: React.ReactNode;
   switch (userRole) {
     case 'MASTER':
-      return <MasterDashboard />;
+      dashboard = <MasterDashboard />;
+      break;
     case 'ADMIN':
-      return <AdminDashboard />;
+      dashboard = <AdminDashboard />;
+      break;
     case 'SUPERVISOR':
-      return <SupervisorDashboard />;
-    case 'DRIVER':
-      return <DriverDashboard />;
-    case 'CLIENT':
-      return <ClientDashboard />;
     case 'OPERATOR':
-      return <SupervisorDashboard />;
+      dashboard = <SupervisorDashboard />;
+      break;
+    case 'DRIVER':
+      dashboard = <DriverDashboard />;
+      break;
+    case 'CLIENT':
+      dashboard = <ClientDashboard />;
+      break;
     default:
-      return (
+      dashboard = (
         <div className="flex items-center justify-center min-h-screen">
           <div className="text-center">
             <h2 className="text-2xl font-bold text-gray-900 mb-2">Perfil não reconhecido</h2>
@@ -76,4 +66,10 @@ export const Dashboard: React.FC = () => {
         </div>
       );
   }
+
+  return (
+    <Suspense fallback={<DashboardFallback />}>
+      {dashboard}
+    </Suspense>
+  );
 };

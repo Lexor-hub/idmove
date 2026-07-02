@@ -52,6 +52,22 @@ const isFiniteCoordinate = (latitude: number, longitude: number) =>
   longitude >= -180 &&
   longitude <= 180;
 
+const isFatalTrackingWriteError = (message?: string) => {
+  const normalized = String(message || '').toLowerCase();
+  return [
+    'jwt',
+    'unauthorized',
+    'not authenticated',
+    'permission denied',
+    'row-level',
+    'rls',
+    'sessao',
+    'session',
+    'inativa',
+    'inactive',
+  ].some((needle) => normalized.includes(needle));
+};
+
 export function useDriverLocation({ driverId, sessionId, active, onPosition, onError }: UseDriverLocationOptions) {
   const webWatchRef = useRef<number | null>(null);
   const bgGeoRef = useRef<string | null>(null);
@@ -69,6 +85,7 @@ export function useDriverLocation({ driverId, sessionId, active, onPosition, onE
     }
 
     let cancelled = false;
+    const trackingStartedAt = Date.now();
 
     const handleError = (error: GeolocationPositionError | Error) => {
       if (cancelled) return;
@@ -80,27 +97,31 @@ export function useDriverLocation({ driverId, sessionId, active, onPosition, onE
     const sendPosition = async (position: DriverTrackingPosition) => {
       if (cancelled) return;
       if (!isFiniteCoordinate(position.latitude, position.longitude)) return;
-      if (!shouldSendTrackingPoint({ previous: lastSentRef.current, next: position })) return;
+      const recordedAt = Math.max(Number(position.recordedAt) || trackingStartedAt, trackingStartedAt);
+      const normalizedPosition = { ...position, recordedAt };
+      if (!shouldSendTrackingPoint({ previous: lastSentRef.current, next: normalizedPosition })) return;
 
-      lastSentRef.current = position;
-      setLastPosition(position);
+      lastSentRef.current = normalizedPosition;
+      setLastPosition(normalizedPosition);
       setIsRequesting(false);
-      onPosition?.(position);
+      onPosition?.(normalizedPosition);
 
       const response = await apiService.recordDriverLocation({
         session_id: sessionId,
         driver_id: driverId,
-        latitude: position.latitude,
-        longitude: position.longitude,
-        accuracy: position.accuracy ?? undefined,
-        speed: position.speed ?? undefined,
-        heading: position.heading ?? undefined,
-        recorded_at: new Date(position.recordedAt).toISOString(),
+        latitude: normalizedPosition.latitude,
+        longitude: normalizedPosition.longitude,
+        accuracy: normalizedPosition.accuracy ?? undefined,
+        speed: normalizedPosition.speed ?? undefined,
+        heading: normalizedPosition.heading ?? undefined,
+        recorded_at: new Date(normalizedPosition.recordedAt).toISOString(),
       });
 
       if (!response.success) {
         console.warn('[useDriverLocation] Falha ao enviar posicao:', response.error);
-        handleError(new Error(response.error));
+        if (isFatalTrackingWriteError(response.error)) {
+          handleError(new Error(response.error));
+        }
       }
     };
 

@@ -1,4 +1,3 @@
-import Tesseract from 'tesseract.js';
 import {
   FIXED_NFE_EMITENTE_CNPJ,
   FIXED_NFE_TRANSPORTADORA_CNPJ,
@@ -402,6 +401,7 @@ export async function processImageOCR(
 
     let result: any;
     try {
+      const { default: Tesseract } = await import('tesseract.js');
       result = await Tesseract.recognize(imageUrl, 'por', {
         logger: (info: { status: string; progress: number }) => {
           if (info.status === 'recognizing text') {

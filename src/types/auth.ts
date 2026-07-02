@@ -61,11 +61,13 @@ export interface ApiResponse<T> {
 export interface LoginResponse {
   token: string;
   user: User;
+  company?: Company | null;
 }
 
 export interface CompanySelectionResponse {
   token: string;
   user: User;
+  company?: Company | null;
 }
 
 export interface CompaniesResponse {

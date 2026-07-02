@@ -128,22 +128,26 @@ const Tracking = () => {
   useEffect(() => {
     let isMounted = true;
 
-    const fetchAll = async () => {
+    const fetchAll = async (showLoading = false) => {
       try {
-        setIsLoading(true);
+        if (showLoading) setIsLoading(true);
         const { data, error } = await supabase
           .from('v_motoristas_posicao')
           .select('motorista_id, driver_name, session_id, is_active, latitude, longitude, accuracy_m, speed_kmh, heading_deg, recorded_at, updated_at')
           .eq('is_active', true);
 
-        if (!isMounted || error || !data) {
-          if (error) setError('Erro ao carregar posições');
+        if (!isMounted) return;
+
+        if (error) {
+          console.warn('[Tracking] Erro ao carregar posições:', error);
+          setLocations([]);
+          setError('Erro ao carregar posições. A tela vai tentar atualizar automaticamente.');
           return;
         }
 
         const now = Date.now();
         setLocations(
-          data
+          (data || [])
             .filter((r) => Number.isFinite(r.latitude) && Number.isFinite(r.longitude))
             .map((r) => ({
               driver_id: r.motorista_id,
@@ -160,10 +164,14 @@ const Tracking = () => {
             }))
         );
         setError(null);
-        setIsLoading(false);
       } catch (err) {
         console.error('[TrackingMap] Erro ao buscar posições:', err);
-        if (isMounted) setError('Não foi possível carregar as localizações.');
+        if (isMounted) {
+          setLocations([]);
+          setError('Não foi possível carregar as localizações.');
+        }
+      } finally {
+        if (isMounted) setIsLoading(false);
       }
     };
 
@@ -180,76 +188,10 @@ const Tracking = () => {
       setActiveSessionDrivers(new Set((data || []).map((row) => String(row.driver_id))));
     };
 
-    fetchAll();
+    fetchAll(true);
     fetchActiveSessions();
+    const locationsPoll = setInterval(() => fetchAll(false), 30_000);
     const sessionsPoll = setInterval(fetchActiveSessions, 60_000);
-
-    // Realtime subscription — escuta INSERT e UPDATE
-    const channel = supabase
-      .channel('rt_motoristas_posicao')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'motoristas_posicao' },
-        async (payload) => {
-          if (!isMounted) return;
-          const motoristaId = (payload.new as Record<string, unknown>)?.motorista_id as string
-                            || (payload.old as Record<string, unknown>)?.motorista_id as string;
-          if (!motoristaId) return;
-
-          console.debug('[Tracking] Realtime event recebido:', payload.eventType, motoristaId);
-
-          const isActive = (payload.new as Record<string, unknown>)?.is_active;
-          if (payload.eventType === 'DELETE' || isActive === false) {
-            setLocations((prev) => prev.filter((l) => l.driver_id !== motoristaId));
-            return;
-          }
-
-          // Re-fetch desta linha na view (converte geography → lat/lon)
-          const { data: row, error: rowError } = await supabase
-            .from('v_motoristas_posicao')
-            .select('motorista_id, driver_name, session_id, is_active, latitude, longitude, accuracy_m, speed_kmh, heading_deg, recorded_at, updated_at')
-            .eq('motorista_id', motoristaId)
-            .eq('is_active', true)
-            .single();
-
-          if (rowError) {
-            setLocations((prev) => prev.filter((l) => l.driver_id !== motoristaId));
-            return;
-          }
-          if (!row || !isMounted) return;
-          if (!Number.isFinite(row.latitude) || !Number.isFinite(row.longitude)) return;
-
-          const now = Date.now();
-          setLocations((prev) => {
-            const existing = prev.findIndex((l) => l.driver_id === motoristaId);
-            const updated = {
-              driver_id: row.motorista_id,
-              session_id: row.session_id,
-              driver_name: row.driver_name,
-              latitude: row.latitude,
-              longitude: row.longitude,
-              last_update: row.updated_at,
-              status: 'active' as const,
-              movementStatus: computeMovementStatus({ speed: row.speed_kmh, last_update: row.updated_at }, now),
-              speed: Number(row.speed_kmh || 0),
-              accuracy: Number(row.accuracy_m || 0),
-              heading: Number(row.heading_deg || 0),
-            };
-            if (existing >= 0) {
-              const next = [...prev];
-              next[existing] = updated;
-              return next;
-            }
-            return [...prev, updated];
-          });
-        }
-      )
-      .subscribe((status) => {
-        console.info('[Tracking] Realtime channel status:', status);
-        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          setError('Conexão em tempo real perdida. Recarregue para tentar novamente.');
-        }
-      });
 
     // Re-calcular status "offline" a cada 30s (sem chamada de rede)
     const offlineTimer = setInterval(() => {
@@ -265,8 +207,8 @@ const Tracking = () => {
     return () => {
       isMounted = false;
       clearInterval(offlineTimer);
+      clearInterval(locationsPoll);
       clearInterval(sessionsPoll);
-      supabase.removeChannel(channel);
     };
   }, []);
 

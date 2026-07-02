@@ -49,6 +49,20 @@ type AuthUserContext = {
 };
 
 type ApiDelivery = Record<string, any>;
+type DeliveryReceiptSummary = { id?: string; created_at?: string | null };
+type DeliveryLookupRow = ApiDelivery & { id: string; status?: string | null; notes?: string | null };
+type DeliveryRouteRow = {
+  id: string;
+  company_id?: string | null;
+  driver_id?: string | null;
+  notes?: string | null;
+  delivery_receipts?: DeliveryReceiptSummary[] | DeliveryReceiptSummary | null;
+};
+
+const asReceiptArray = (value: DeliveryRouteRow['delivery_receipts']): DeliveryReceiptSummary[] => {
+  if (Array.isArray(value)) return value;
+  return value ? [value] : [];
+};
 
 const normalizeDeliveryStatus = (status?: string | null): DeliveryStatus => {
   const map: Record<string, DeliveryStatus> = {
@@ -113,6 +127,19 @@ const responseError = (error: unknown) => {
 const publicUrl = (bucket: string, path?: string | null) => {
   if (!path) return null;
   return supabase.storage.from(bucket).getPublicUrl(path).data.publicUrl;
+};
+
+const concatNotes = (...parts: Array<unknown>) => {
+  const seen = new Set<string>();
+  return parts
+    .flatMap((part) => String(part || '').split(/\n{2,}/))
+    .map((part) => part.trim())
+    .filter((part) => {
+      if (!part || seen.has(part)) return false;
+      seen.add(part);
+      return true;
+    })
+    .join('\n\n') || null;
 };
 
 const fileToBase64 = (file: File): Promise<string> =>
@@ -437,6 +464,7 @@ class ApiService {
       return {
         token: data.session.access_token,
         user: this.profileToUser(context.profile, context.company, context.driverId, context.clientId),
+        company: context.company,
       };
     });
   }
@@ -890,10 +918,29 @@ class ApiService {
       const destinatario = structured.destinatario || {};
       const valores = structured.valores || {};
       const volumes = structured.volumes || {};
+      const nfNumber = String(summary.nfNumber || nfData.numero || payload.nf_number || `NF-${Date.now()}`).trim();
+      const terminalStatuses = new Set(['DELIVERED', 'FAILED']);
+      const openStatuses = new Set(['PENDING', 'ASSIGNED', 'IN_TRANSIT', 'CANCELLED']);
 
-      let sourceDocumentPath: string | null = null;
-      if (payload.file instanceof File) {
-        sourceDocumentPath = (await this.uploadToBucket('delivery-documents', payload.file, `${companyId}/documents`)).path;
+      const { data: existingDeliveries, error: existingError } = await supabase
+        .from('deliveries')
+        .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,notes,created_at)')
+        .eq('company_id', companyId)
+        .eq('nf_number', nfNumber)
+        .is('original_delivery_id', null)
+        .is('rescheduled_from_occurrence_id', null)
+        .order('created_at', { ascending: false });
+
+      if (existingError) throw existingError;
+
+      const existingRows = (existingDeliveries || []) as DeliveryLookupRow[];
+      const existingTerminal = existingRows.find((delivery) => terminalStatuses.has(String(delivery.status)));
+      if (existingTerminal) {
+        return {
+          ...this.mapDelivery(existingTerminal),
+          deduped: true,
+          dedupe_reason: 'NF ja possui entrega finalizada ou com ocorrencia registrada.',
+        };
       }
 
       // Resolve client by CNPJ — find or create
@@ -949,25 +996,61 @@ class ApiService {
         ? String(payload.driver_id)
         : null;
       const driverId = requestedDriverId || context.driverId || null;
+
+      let sourceDocumentPath: string | null = null;
+      if (payload.file instanceof File) {
+        sourceDocumentPath = (await this.uploadToBucket('delivery-documents', payload.file, `${companyId}/documents`)).path;
+      }
+
+      const deliveryPayload = {
+        company_id: companyId,
+        driver_id: driverId,
+        client_id: clientId,
+        nf_number: nfNumber,
+        client_name: clientName || 'Cliente nao informado',
+        client_name_extracted: clientName || null,
+        delivery_address: summary.deliveryAddress || destinatario.endereco || payload.delivery_address || 'Endereco nao informado',
+        client_address: summary.deliveryAddress || destinatario.endereco || null,
+        delivery_volume: Number(summary.volume || volumes.quantidade || payload.delivery_volume || 1),
+        merchandise_value: asNumber(summary.merchandiseValue || valores.valor_total_nota || payload.merchandise_value, 0),
+        scheduled_date: payload.scheduled_date || todayIso(),
+        notes: payload.notes || summary.observations || null,
+        status: driverId ? 'ASSIGNED' : 'PENDING',
+        source_document_path: sourceDocumentPath,
+        created_by_profile_id: context.profile.id,
+        created_by_name: context.profile.full_name || null,
+      };
+
+      const existingOpen = existingRows.find((delivery) => openStatuses.has(String(delivery.status)));
+      if (existingOpen) {
+        const reopenNote = existingOpen.status === 'CANCELLED'
+          ? 'Entrega reaberta por reimportacao da mesma NF; registro original preservado.'
+          : 'Dados atualizados por reimportacao da mesma NF; duplicata evitada.';
+        const nextNotes = concatNotes(existingOpen.notes, deliveryPayload.notes, reopenNote);
+        const { data, error } = await supabase
+          .from('deliveries')
+          .update({
+            ...deliveryPayload,
+            notes: nextNotes,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', existingOpen.id)
+          .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,notes,created_at)')
+          .single();
+
+        if (error) throw error;
+        return {
+          ...this.mapDelivery(data),
+          deduped: true,
+          dedupe_reason: 'NF ja existia aberta e foi atualizada em vez de duplicada.',
+        };
+      }
+
       const { data, error } = await supabase
         .from('deliveries')
         .insert({
           company_id: companyId,
-          driver_id: driverId,
-          client_id: clientId,
-          nf_number: summary.nfNumber || nfData.numero || payload.nf_number || `NF-${Date.now()}`,
-          client_name: clientName || 'Cliente nao informado',
-          client_name_extracted: clientName || null,
-          delivery_address: summary.deliveryAddress || destinatario.endereco || payload.delivery_address || 'Endereco nao informado',
-          client_address: summary.deliveryAddress || destinatario.endereco || null,
-          delivery_volume: Number(summary.volume || volumes.quantidade || payload.delivery_volume || 1),
-          merchandise_value: asNumber(summary.merchandiseValue || valores.valor_total_nota || payload.merchandise_value, 0),
-          scheduled_date: payload.scheduled_date || todayIso(),
-          notes: payload.notes || summary.observations || null,
-          status: driverId ? 'ASSIGNED' : 'PENDING',
-          source_document_path: sourceDocumentPath,
-          created_by_profile_id: context.profile.id,
-          created_by_name: context.profile.full_name || null,
+          ...deliveryPayload,
         })
         .select()
         .single();
@@ -1141,6 +1224,49 @@ class ApiService {
         p_motorista_id: String(driverId),
       });
       if (error) throw error;
+    });
+  }
+
+  async finishActiveDriverTracking(driverId?: string | number): Promise<ApiResponse<{ finished: number }>> {
+    return this.run(async () => {
+      const context = await this.getContext();
+      const targetDriverId = String(driverId || context.driverId || '');
+      if (!targetDriverId) throw new Error('Motorista nao identificado.');
+
+      const endedAt = new Date().toISOString();
+      const { data, error } = await supabase
+        .from('driver_tracking_sessions')
+        .update({
+          status: 'finished',
+          ended_at: endedAt,
+          updated_at: endedAt,
+        })
+        .eq('driver_id', targetDriverId)
+        .eq('status', 'active')
+        .select('id');
+
+      if (error) throw error;
+
+      const sessionIds = (data || []).map((session: { id: string }) => session.id);
+      if (sessionIds.length > 0) {
+        const { error: positionError } = await supabase
+          .from('motoristas_posicao')
+          .update({
+            is_active: false,
+            updated_at: endedAt,
+          })
+          .eq('motorista_id', targetDriverId)
+          .in('session_id', sessionIds);
+        if (positionError) throw positionError;
+      }
+
+      const { error: driverError } = await supabase
+        .from('drivers')
+        .update({ current_status: 'offline' })
+        .eq('id', targetDriverId);
+      if (driverError) throw driverError;
+
+      return { finished: sessionIds.length };
     });
   }
 
@@ -1422,7 +1548,7 @@ class ApiService {
   async processReceiptOCR(receiptId: string | number, ocrData?: { cnpj?: string; clientName?: string; nfNumber?: string; rawText?: string; confidence?: number }) {
     return this.run(async () => {
       const updatePayload: Record<string, any> = {
-        status: 'PROCESSED',
+        status: 'UPLOADED',
         ocr_data: ocrData ? {
           cnpj: ocrData.cnpj || '',
           client_name: ocrData.clientName || '',
@@ -1457,7 +1583,7 @@ class ApiService {
         ...data,
         id: String(data.id),
         ocr_data: updatePayload.ocr_data,
-        status: 'PROCESSED',
+        status: data.status,
       };
     });
   }
@@ -1506,7 +1632,7 @@ class ApiService {
           file_path: upload.path,
           file_url: upload.url,
           filename: file.name,
-          status: ocrPayload ? 'PROCESSED' : 'UPLOADED',
+          status: 'UPLOADED',
           ocr_data: ocrPayload,
         })
         .select()
@@ -1821,12 +1947,105 @@ class ApiService {
     });
   }
 
+  async finishDriverRoute(driverId?: string | number): Promise<ApiResponse<{ delivered: number; returned_to_assigned: number; total: number }>> {
+    return this.run(async () => {
+      const context = await this.getContext();
+      const companyId = context.profile.company_id;
+      if (!companyId) throw new Error('Empresa nao identificada.');
+
+      const targetDriverId = String(driverId || context.driverId || '');
+      if (!targetDriverId) throw new Error('Motorista nao identificado.');
+
+      const { data: routeDeliveries, error } = await supabase
+        .from('deliveries')
+        .select('id, company_id, driver_id, notes, delivery_receipts(id,created_at)')
+        .eq('company_id', companyId)
+        .eq('driver_id', targetDriverId)
+        .lte('scheduled_date', todayIso())
+        .eq('status', 'IN_TRANSIT');
+
+      if (error) throw error;
+
+      const rows = (routeDeliveries || []) as DeliveryRouteRow[];
+      const withReceipt = rows.filter((delivery) => {
+        const receipts = asReceiptArray(delivery.delivery_receipts);
+        return receipts.length > 0;
+      });
+      const withoutReceipt = rows.filter((delivery) => {
+        const receipts = asReceiptArray(delivery.delivery_receipts);
+        return receipts.length === 0;
+      });
+
+      const updatedAt = new Date().toISOString();
+      const withReceiptIds = withReceipt.map((delivery) => delivery.id);
+
+      if (withReceiptIds.length > 0) {
+        const { error: updateError } = await supabase
+          .from('deliveries')
+          .update({
+            status: 'DELIVERED',
+            delivered_at: updatedAt,
+            updated_at: updatedAt,
+          })
+          .in('id', withReceiptIds);
+        if (updateError) throw updateError;
+      }
+
+      await Promise.all(withoutReceipt.map(async (delivery) => {
+        const { error: updateError } = await supabase
+          .from('deliveries')
+          .update({
+            status: 'ASSIGNED',
+            notes: concatNotes(
+              delivery.notes,
+              'Rota finalizada sem canhoto; entrega voltou para atribuida para conferencia operacional.'
+            ),
+            updated_at: updatedAt,
+          })
+          .eq('id', delivery.id);
+        if (updateError) throw updateError;
+      }));
+
+      const events = [
+        ...withReceipt.map((delivery) => ({
+          company_id: companyId,
+          delivery_id: delivery.id,
+          driver_id: targetDriverId,
+          event_type: 'DELIVERED',
+          description: 'Finalizacao de rota: entrega tinha canhoto e foi marcada como entregue.',
+        })),
+        ...withoutReceipt.map((delivery) => ({
+          company_id: companyId,
+          delivery_id: delivery.id,
+          driver_id: targetDriverId,
+          event_type: 'ASSIGNED',
+          description: 'Finalizacao de rota: entrega sem canhoto voltou para atribuida; registro preservado.',
+        })),
+      ];
+
+      if (events.length > 0) {
+        const { error: eventError } = await supabase.from('delivery_events').insert(events);
+        if (eventError) throw eventError;
+      }
+
+      return {
+        delivered: withReceipt.length,
+        returned_to_assigned: withoutReceipt.length,
+        total: rows.length,
+      };
+    });
+  }
+
   async startRoute(deliveryIds: string[]): Promise<ApiResponse<{ success: boolean; updated: number }>> {
     return this.run(async () => {
       const { data, error, count } = await supabase
         .from('deliveries')
         .update({ status: 'IN_TRANSIT' })
         .in('id', deliveryIds)
+        // Nunca rebaixar entregas já finalizadas: a lista local do app pode estar
+        // desatualizada (canhoto tirado segundos antes de "Iniciar rota") e sem este
+        // filtro entregas DELIVERED voltavam para IN_TRANSIT (bug das entregas presas).
+        .in('status', ['PENDING', 'ASSIGNED'])
         .select('id');
 
       if (error) throw error;
@@ -1836,23 +2055,41 @@ class ApiService {
 
   async deleteDelivery(deliveryId: string | number): Promise<ApiResponse<{ id: string }>> {
     return this.run(async () => {
-      const companyId = await this.companyId();
+      const context = await this.getContext();
+      const companyId = context.profile.company_id;
+      if (!companyId) throw new Error('Empresa nao identificada.');
       // Only allow deleting deliveries that haven't been finalized
       const { data: delivery, error: fetchError } = await supabase
         .from('deliveries')
-        .select('id, status')
+        .select('id, status, notes')
         .eq('id', String(deliveryId))
         .eq('company_id', companyId)
         .single();
       if (fetchError) throw fetchError;
       if (!['PENDING', 'ASSIGNED', 'FAILED'].includes(delivery.status)) {
-        throw new Error('Não é possível excluir uma entrega em andamento ou já finalizada.');
+        throw new Error('Não é possível remover uma entrega em andamento ou já finalizada.');
       }
-      // Remove receipts first (FK)
-      await supabase.from('delivery_receipts').delete().eq('delivery_id', String(deliveryId));
-      await supabase.from('delivery_events').delete().eq('delivery_id', String(deliveryId));
-      const { error } = await supabase.from('deliveries').delete().eq('id', String(deliveryId));
+
+      const cancelledAt = new Date().toISOString();
+      const { error } = await supabase
+        .from('deliveries')
+        .update({
+          status: 'CANCELLED',
+          notes: concatNotes(delivery.notes, 'Entrega removida da rota; registro preservado para auditoria.'),
+          updated_at: cancelledAt,
+        })
+        .eq('id', String(deliveryId));
       if (error) throw error;
+
+      const { error: eventError } = await supabase.from('delivery_events').insert({
+        company_id: companyId,
+        delivery_id: String(deliveryId),
+        driver_id: context.driverId || null,
+        event_type: 'CANCELLED',
+        description: 'Entrega removida/cancelada sem exclusao fisica; historico preservado.',
+      });
+      if (eventError) throw eventError;
+
       return { id: String(deliveryId) };
     });
   }

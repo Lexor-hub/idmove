@@ -54,6 +54,27 @@ const EXTRACTION_SCHEMA = {
   },
 };
 
+// Mesmo contrato do EXTRACTION_SCHEMA, no dialeto de schema do Gemini.
+const GEMINI_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    numero_nfe: { type: "STRING", nullable: true },
+    nome_destinatario: { type: "STRING", nullable: true },
+    cnpj_destinatario: { type: "STRING", nullable: true },
+    endereco_destinatario: { type: "STRING", nullable: true },
+    cnpj_emitente: { type: "STRING", nullable: true },
+    cnpj_transportadora: { type: "STRING", nullable: true },
+  },
+  required: [
+    "numero_nfe",
+    "nome_destinatario",
+    "cnpj_destinatario",
+    "endereco_destinatario",
+    "cnpj_emitente",
+    "cnpj_transportadora",
+  ],
+};
+
 function normalizeWhitespace(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value
@@ -119,7 +140,15 @@ function isSuspiciousField(value: string | null, minLength: number): boolean {
   return /(?:\.\.\.|[_|]{2,}|[A-Z0-9]{1,3}\s*$)/.test(value);
 }
 
-async function requestVisionExtraction(
+function parseJsonPayload(rawText: string): Record<string, unknown> {
+  const cleaned = rawText
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```\s*$/i, "")
+    .trim();
+  return JSON.parse(cleaned) as Record<string, unknown>;
+}
+
+async function requestOpenAiExtraction(
   apiKey: string,
   contentType: string,
   imageBase64: string,
@@ -170,12 +199,109 @@ async function requestVisionExtraction(
 
   const json = await response.json();
   const rawText: string = json?.choices?.[0]?.message?.content ?? "";
-  const cleaned = rawText
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```\s*$/i, "")
-    .trim();
+  return parseJsonPayload(rawText);
+}
 
-  return JSON.parse(cleaned) as Record<string, unknown>;
+async function requestGeminiExtraction(
+  apiKey: string,
+  contentType: string,
+  imageBase64: string,
+  prompt: string,
+  model = "gemini-2.5-flash",
+) {
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey,
+      },
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [{ text: SYSTEM_PROMPT }],
+        },
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                inline_data: {
+                  mime_type: contentType,
+                  data: imageBase64,
+                },
+              },
+              { text: prompt },
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0,
+          responseMimeType: "application/json",
+          responseSchema: GEMINI_SCHEMA,
+        },
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    const errText = await response.text();
+    console.error("[extract-nfe-gemini] Gemini API error:", response.status, errText.slice(0, 300));
+    throw new Error(`GEMINI_${response.status}`);
+  }
+
+  const json = await response.json();
+  const rawText: string = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  return parseJsonPayload(rawText);
+}
+
+type Provider = {
+  name: "gemini" | "openai";
+  extract: (prompt: string) => Promise<Record<string, unknown>>;
+};
+
+// Cadeia de provedores: Gemini primeiro (chave ativa), OpenAI como reserva.
+// Se um falhar por chave inválida/sem créditos/erro de API, o próximo assume.
+function buildProviders(contentType: string, imageBase64: string): Provider[] {
+  const providers: Provider[] = [];
+
+  const geminiKey = Deno.env.get("GEMINI_API_KEY");
+  if (geminiKey) {
+    providers.push({
+      name: "gemini",
+      extract: (prompt) => requestGeminiExtraction(geminiKey, contentType, imageBase64, prompt),
+    });
+  }
+
+  const openAiKey = Deno.env.get("OPENAI_API_KEY");
+  if (openAiKey) {
+    providers.push({
+      name: "openai",
+      extract: (prompt) => requestOpenAiExtraction(openAiKey, contentType, imageBase64, prompt),
+    });
+  }
+
+  return providers;
+}
+
+async function extractWithFallback(
+  providers: Provider[],
+  prompt: string,
+): Promise<{ parsed: Record<string, unknown>; provider: Provider }> {
+  let lastError: unknown = null;
+  for (const provider of providers) {
+    try {
+      const parsed = await provider.extract(prompt);
+      return { parsed, provider };
+    } catch (error) {
+      lastError = error;
+      console.error(
+        `[extract-nfe-gemini] Provider ${provider.name} failed:`,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+  throw lastError ?? new Error("NO_PROVIDER");
 }
 
 function normalizeExtraction(parsed: Record<string, unknown>) {
@@ -245,26 +371,25 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "Imagem muito grande. Tente uma foto mais leve." }, 400);
   }
 
-  // Call OpenAI vision API
-  const apiKey = Deno.env.get("OPENAI_API_KEY");
-  if (!apiKey) {
-    console.error("[extract-nfe-gemini] OPENAI_API_KEY not set");
-    return jsonResponse({ error: "OPENAI_API_KEY não configurada na função de leitura." }, 503);
+  const providers = buildProviders(content_type, image_base64);
+  if (providers.length === 0) {
+    console.error("[extract-nfe-gemini] No API key configured (GEMINI_API_KEY / OPENAI_API_KEY)");
+    return jsonResponse({ error: "Leitura automática indisponível. Preencha os dados manualmente." }, 503);
   }
 
   try {
-    let parsed: Record<string, unknown>;
+    let extraction: { parsed: Record<string, unknown>; provider: Provider };
     try {
-      parsed = await requestVisionExtraction(apiKey, content_type, image_base64, USER_PROMPT);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.startsWith("OPENAI_")) {
-        return jsonResponse({ error: `Erro na API OpenAI (${message.replace("OPENAI_", "")}).` }, 503);
-      }
-      throw error;
+      extraction = await extractWithFallback(providers, USER_PROMPT);
+    } catch {
+      return jsonResponse(
+        { error: "Leitura automática indisponível no momento. Preencha os dados manualmente." },
+        503,
+      );
     }
 
-    let normalized = normalizeExtraction(parsed);
+    let normalized = normalizeExtraction(extraction.parsed);
+    console.log(`[extract-nfe-gemini] Extraction via ${extraction.provider.name}`);
 
     const needsRepair =
       !normalized.cnpj_destinatario ||
@@ -277,7 +402,7 @@ Deno.serve(async (req: Request) => {
           USER_PROMPT +
           "\n\nFaça uma segunda verificação focando somente na seção DESTINATÁRIO/REMETENTE. " +
           "Confirme o CNPJ do destinatário com todos os 14 dígitos e transcreva o nome e endereço completos, sem cortar o final.";
-        const repaired = await requestVisionExtraction(apiKey, content_type, image_base64, repairPrompt, "gpt-4o");
+        const repaired = await extraction.provider.extract(repairPrompt);
         normalized = {
           numero_nfe: normalizeNfNumber(repaired.numero_nfe) || normalized.numero_nfe,
           nome_destinatario: normalizeWhitespace(repaired.nome_destinatario) || normalized.nome_destinatario,
@@ -294,6 +419,9 @@ Deno.serve(async (req: Request) => {
     return jsonResponse(normalized, 200);
   } catch (err) {
     console.error("[extract-nfe-gemini] Error:", err instanceof Error ? err.message : String(err));
-    return jsonResponse({ error: "Falha inesperada ao chamar a API OpenAI." }, 503);
+    return jsonResponse(
+      { error: "Leitura automática indisponível no momento. Preencha os dados manualmente." },
+      503,
+    );
   }
 });

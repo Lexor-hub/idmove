@@ -27,7 +27,7 @@ import {
 } from '@/components/ui/breadcrumb';
 import { LogOut, User, Settings, Truck, Menu, Home, BarChart3, Package, Users, MapPin, FileText, Building } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { useState } from 'react';
+import { useState, type MouseEvent } from 'react';
 
 export const Header = () => {
   const { user, company, logout } = useAuth();
@@ -127,6 +127,10 @@ export const Header = () => {
 
   const navigationItems = getNavigationItems();
   const breadcrumbs = getBreadcrumbs();
+  const handleBreadcrumbNavigation = (href: string) => (event: MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    navigate(href);
+  };
 
   return (
     <header className="bg-background/80 backdrop-blur-xl shadow-elevated border-b border-white/5 sticky top-0 z-50 transition-all duration-300">
@@ -177,6 +181,7 @@ export const Header = () => {
                     <BreadcrumbItem>
                       <BreadcrumbLink 
                         href={crumb.href}
+                        onClick={handleBreadcrumbNavigation(crumb.href)}
                         className="text-muted-foreground hover:text-primary transition-colors"
                       >
                         {crumb.label}
@@ -263,6 +268,7 @@ export const Header = () => {
                   ) : (
                     <BreadcrumbLink 
                       href={crumb.href}
+                      onClick={handleBreadcrumbNavigation(crumb.href)}
                       className="text-muted-foreground hover:text-primary transition-colors"
                     >
                       {crumb.label}

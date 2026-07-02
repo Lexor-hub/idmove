@@ -96,15 +96,23 @@ export const DriverDashboard = () => {
     // ocorrência falhavam com "Motorista não identificado" mesmo o motorista
     // estando corretamente vinculado no banco.
     const [resolvedDriverId, setResolvedDriverId] = useState<string | null>(null);
+    const [driverLinkChecked, setDriverLinkChecked] = useState(Boolean(user?.driver_id));
 
     useEffect(() => {
         let cancelled = false;
         if (!user?.driver_id) {
+            setDriverLinkChecked(false);
             apiService.getCurrentDriverId()
                 .then((id) => {
                     if (!cancelled && id) setResolvedDriverId(id);
                 })
-                .catch((err) => { console.debug('[DriverDashboard] auto-recuperar driver_id falhou:', err); });
+                .catch((err) => { console.debug('[DriverDashboard] auto-recuperar driver_id falhou:', err); })
+                .finally(() => {
+                    if (!cancelled) setDriverLinkChecked(true);
+                });
+        } else {
+            setResolvedDriverId(null);
+            setDriverLinkChecked(true);
         }
         return () => { cancelled = true; };
     }, [user?.driver_id]);
@@ -581,11 +589,17 @@ export const DriverDashboard = () => {
     }, [deliveries]);
 
     useEffect(() => {
+        if (!driverLinkChecked) {
+            return;
+        }
+
         const driverId = resolveDriverId();
         if (driverId) {
             loadTodayDeliveries();
+        } else {
+            setLoading(false);
         }
-    }, [resolveDriverId, loadTodayDeliveries]);
+    }, [driverLinkChecked, resolveDriverId, loadTodayDeliveries]);
 
     useEffect(() => {
         if (!routeStarted) {
@@ -666,8 +680,24 @@ export const DriverDashboard = () => {
             await sendLocationUpdate(lastKnownPosition);
         }
 
+        let routeSummary: { delivered: number; returned_to_assigned: number; total: number } | null = null;
+        if (driverId) {
+            const finishRouteResponse = await apiService.finishDriverRoute(driverId);
+            if (finishRouteResponse.success && finishRouteResponse.data) {
+                routeSummary = finishRouteResponse.data;
+            } else {
+                toast({
+                    title: 'Rota finalizada com pendência',
+                    description: finishRouteResponse.error || 'Não foi possível atualizar o status das entregas da rota.',
+                    variant: 'destructive'
+                });
+            }
+        }
+
+        let trackingFinished = false;
         if (driverId && sessionId) {
             const response = await apiService.finishDriverTracking(driverId, sessionId);
+            trackingFinished = response.success;
             if (!response.success) {
                 toast({
                     title: 'Erro ao finalizar rastreamento',
@@ -676,12 +706,33 @@ export const DriverDashboard = () => {
                 });
             }
         }
+
+        if (driverId && !trackingFinished) {
+            const response = await apiService.finishActiveDriverTracking(driverId);
+            if (!response.success) {
+                toast({
+                    title: 'Rastreamento ainda pode estar ativo',
+                    description: response.error || 'Não foi possível encerrar sessões antigas automaticamente.',
+                    variant: 'destructive'
+                });
+            }
+        }
+
         setRouteStarted(false);
+        setDayStarted(false);
         stopLocationTracking();
         await updateDriverStatus('offline');
+        await loadTodayDeliveries();
+
+        const deliveredText = routeSummary?.delivered
+            ? `${routeSummary.delivered} entrega(s) com canhoto marcada(s) como realizada(s).`
+            : '';
+        const pendingText = routeSummary?.returned_to_assigned
+            ? `${routeSummary.returned_to_assigned} entrega(s) sem canhoto voltaram para atribuida(s).`
+            : '';
         toast({
             title: 'Rota finalizada!',
-            description: 'Parabéns! Sua rota foi concluída com sucesso.'
+            description: [deliveredText, pendingText].filter(Boolean).join(' ') || 'Rastreamento encerrado e entregas conferidas.'
         });
     };
 
@@ -894,7 +945,10 @@ const handleDisableLocation = () => {
             );
             if (response.success) {
                 if (ocrData && response.data?.id) {
-                    await apiService.processReceiptOCR(response.data.id, ocrData);
+                    const ocrResponse = await apiService.processReceiptOCR(response.data.id, ocrData);
+                    if (!ocrResponse.success) {
+                        console.warn('[DriverDashboard] Canhoto salvo, mas OCR nao foi persistido:', ocrResponse.error);
+                    }
                 }
 
                 toast({ title: "Entrega finalizada!", description: "Canhoto enviado. O cliente já pode visualizar na plataforma." });
@@ -914,7 +968,7 @@ const handleDisableLocation = () => {
                 setFinalizeStep(1);
                 setFinalizeNotes('');
             } else {
-                throw new Error((response as any).message || 'Erro desconhecido');
+                throw new Error(response.error || 'Erro desconhecido');
             }
         } catch (error: any) {
             toast({
@@ -1131,18 +1185,53 @@ const handleDisableLocation = () => {
             const response = await apiService.deleteDelivery(deliveryToDelete.id);
             if (response.success) {
                 setDeliveries(prev => prev.filter(d => d.id !== deliveryToDelete.id));
-                toast({ title: 'Entrega excluída', description: `NF ${deliveryToDelete.nfNumber} removida.` });
+                toast({ title: 'Entrega removida', description: `NF ${deliveryToDelete.nfNumber} saiu da rota e o histórico foi preservado.` });
                 setShowDeleteModal(false);
                 setDeliveryToDelete(null);
             } else {
-                toast({ title: 'Erro ao excluir', description: (response as any).error, variant: 'destructive' });
+                toast({ title: 'Erro ao remover', description: (response as any).error, variant: 'destructive' });
             }
         } catch (err: any) {
-            toast({ title: 'Erro', description: err.message || 'Não foi possível excluir.', variant: 'destructive' });
+            toast({ title: 'Erro', description: err.message || 'Não foi possível remover.', variant: 'destructive' });
         } finally {
             setDeletingDelivery(false);
         }
     };
+
+    const driverLinkMissing = driverLinkChecked && !resolveDriverId();
+    const assignedDeliveryCount = deliveries.filter(d => d.originalApiStatus === 'ASSIGNED').length;
+
+    if (loading && !driverLinkMissing) {
+        return (
+            <main className="container mx-auto px-4 py-6 max-w-md lg:max-w-4xl">
+                <div className="flex min-h-80 items-center justify-center">
+                    <div className="text-center space-y-3">
+                        <Loader2 className="h-8 w-8 animate-spin text-primary mx-auto" />
+                        <p className="text-sm text-muted-foreground">Carregando painel do motorista...</p>
+                    </div>
+                </div>
+            </main>
+        );
+    }
+
+    if (driverLinkMissing) {
+        return (
+            <main className="container mx-auto px-4 py-6 max-w-md lg:max-w-4xl">
+                <Card className="border-destructive/40">
+                    <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                            <AlertTriangle className="h-5 w-5 text-destructive" />
+                            Cadastro incompleto
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-2 text-sm text-muted-foreground">
+                        <p>Seu acesso ainda não está vinculado ao cadastro operacional de motorista.</p>
+                        <p>Avise o administrador da transportadora e faça logout/login depois do ajuste.</p>
+                    </CardContent>
+                </Card>
+            </main>
+        );
+    }
 
     return (
         <main className="container mx-auto px-4 py-6 space-y-6 max-w-md lg:max-w-4xl">
@@ -1242,9 +1331,9 @@ const handleDisableLocation = () => {
                                 <p className="text-xs text-gray-600">NFs Pré-atribuídas</p>
                             </div>
                             <div className="text-center">
-                                <div className="text-2xl font-bold text-green-600">
-                                    {deliveries.filter(d => d.originalApiStatus === 'ASSIGNED').length}
-                                </div>
+	                                <div className="text-2xl font-bold text-green-600">
+	                                    {assignedDeliveryCount}
+	                                </div>
                                 <p className="text-xs text-gray-600">NFs Carregadas</p>
                             </div>
                         </div>
@@ -1388,11 +1477,11 @@ const handleDisableLocation = () => {
                         <CardHeader>
                             <CardTitle className="flex items-center gap-2">
                                 <CheckCircle className="h-5 w-5 text-green-600" />
-                                NFs Carregadas ({deliveries.filter(d => d.originalApiStatus === 'ASSIGNED').length})
+	                                NFs Carregadas ({assignedDeliveryCount})
                             </CardTitle>
                         </CardHeader>
                         <CardContent>
-                            {deliveries.filter(d => d.originalApiStatus === 'ASSIGNED').length === 0 ? (
+	                            {assignedDeliveryCount === 0 ? (
                                 <div className="text-center py-8">
                                     <Package className="h-12 w-12 mx-auto text-gray-400 mb-4" />
                                     <p className="text-gray-500">Nenhuma NF carregada ainda</p>
@@ -1418,14 +1507,14 @@ const handleDisableLocation = () => {
                     </Card>
 
                     {/* Botão Iniciar Rota */}
-                    <Button
-                        onClick={startRoute}
-                        className="bg-green-600 hover:bg-green-700 w-full h-14 text-lg font-semibold"
-                        disabled={deliveries.filter(d => d.originalApiStatus === 'ASSIGNED').length === 0}
-                    >
-                        <Route className="mr-2 h-5 w-5" />
-                        Iniciar Rota ({deliveries.filter(d => d.originalApiStatus === 'ASSIGNED').length} NFs)
-                    </Button>
+	                    <Button
+	                        onClick={startRoute}
+	                        className="bg-green-600 hover:bg-green-700 w-full h-14 text-lg font-semibold"
+	                        disabled={requestingLocation}
+	                    >
+	                        <Route className="mr-2 h-5 w-5" />
+	                        {assignedDeliveryCount > 0 ? `Iniciar Rota (${assignedDeliveryCount} NFs)` : 'Iniciar Rastreamento'}
+	                    </Button>
                 </>
             ) : (
                 // FASE ON_ROUTE: Lista de Entregas Normal
@@ -1996,13 +2085,13 @@ const handleDisableLocation = () => {
                 </DialogContent>
             </Dialog>
 
-            {/* Modal de confirmação de exclusão */}
+            {/* Modal de confirmação de cancelamento */}
             <Dialog open={showDeleteModal} onOpenChange={setShowDeleteModal}>
                 <DialogContent className="sm:max-w-sm">
                     <DialogHeader>
-                        <DialogTitle>Excluir entrega</DialogTitle>
+                        <DialogTitle>Remover entrega</DialogTitle>
                         <DialogDescription>
-                            Tem certeza que deseja excluir a NF {deliveryToDelete?.nfNumber} — {deliveryToDelete?.client}? Esta ação não pode ser desfeita.
+                            Tem certeza que deseja remover a NF {deliveryToDelete?.nfNumber} — {deliveryToDelete?.client} da rota? O histórico ficará preservado.
                         </DialogDescription>
                     </DialogHeader>
                     <DialogFooter className="grid grid-cols-2 gap-2">
@@ -2011,9 +2100,9 @@ const handleDisableLocation = () => {
                         </Button>
                         <Button variant="destructive" onClick={handleConfirmDelete} disabled={deletingDelivery}>
                             {deletingDelivery ? (
-                                <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Excluindo...</>
+                                <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Removendo...</>
                             ) : (
-                                <><Trash2 className="mr-2 h-4 w-4" />Excluir</>
+                                <><Trash2 className="mr-2 h-4 w-4" />Remover</>
                             )}
                         </Button>
                     </DialogFooter>

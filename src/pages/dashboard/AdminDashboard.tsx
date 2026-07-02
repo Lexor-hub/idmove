@@ -21,7 +21,6 @@ import {
 import { apiService } from '@/services/api';
 import { useToast } from '@/hooks/use-toast';
 import { DeliveryUpload } from '@/components/delivery/DeliveryUpload';
-import { supabase } from '@/integrations/supabase/client';
 import { todayBrt } from '@/lib/date';
 
 interface DriverLoadStatus {
@@ -194,23 +193,10 @@ export const AdminDashboard = () => {
   }, [loadDashboardData]);
 
   useEffect(() => {
-    let debounceId: ReturnType<typeof setTimeout> | undefined;
-    const refreshSilently = () => {
-      if (debounceId) clearTimeout(debounceId);
-      debounceId = setTimeout(() => loadDashboardData(true), 500);
-    };
-
-    const channel = supabase
-      .channel('admin-dashboard-data')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, refreshSilently)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'occurrences' }, refreshSilently)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_events' }, refreshSilently)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'motoristas_posicao' }, refreshSilently)
-      .subscribe();
+    const refreshInterval = setInterval(() => loadDashboardData(true), 60_000);
 
     return () => {
-      if (debounceId) clearTimeout(debounceId);
-      supabase.removeChannel(channel);
+      clearInterval(refreshInterval);
     };
   }, [loadDashboardData]);
 
