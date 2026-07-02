@@ -1719,6 +1719,34 @@ class ApiService {
     });
   }
 
+  // Consulta o XML oficial da NF-e na Receita pela chave de acesso lida do
+  // código de barras da DANFE. Dados exatos como emitidos — sem OCR/IA.
+  async consultarNfePorChave(chave: string): Promise<ApiResponse<ExtractedNfeData>> {
+    return this.run(async () => {
+      const { data, error } = await supabase.functions.invoke('consulta-nfe-chave', {
+        body: { chave },
+      });
+
+      if (error) {
+        console.error('[consulta-nfe-chave] erro da edge function:', error);
+        let msg = error instanceof Error && error.message
+          ? error.message
+          : 'Consulta da NF-e pela chave indisponível.';
+        try {
+          if (error.context && typeof error.context.json === 'function') {
+            const body = await error.context.json();
+            if (body?.error) msg = body.error;
+          }
+        } catch (parseError) {
+          console.error('[consulta-nfe-chave] não consegui ler o corpo do erro:', parseError);
+        }
+        throw new Error(msg);
+      }
+
+      return data as ExtractedNfeData;
+    });
+  }
+
   async getSecureFile(url: string): Promise<string | null> {
     return url || null;
   }

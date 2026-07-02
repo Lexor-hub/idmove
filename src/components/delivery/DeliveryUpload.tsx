@@ -21,6 +21,7 @@ import {
 import { apiService } from '@/services/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { processImageOCR } from '@/services/ocrService';
+import { extrairChaveDaImagem } from '@/lib/nfe-barcode';
 import {
   FIXED_NFE_EMITENTE_CNPJ,
   FIXED_NFE_EMITENTE_NAME,
@@ -815,13 +816,31 @@ const handleDocumentAIData = (input: DocumentAIParsedPayload) => {
 
     try {
       setLoading(true);
-      const response = await apiService.extractNfeWithGemini(file);
 
-      if (!response.success || !response.data) {
-        throw new Error(response.error || 'Não foi possível ler a NF-e pela IA.');
+      // Caminho primário: código de barras da DANFE -> XML oficial da Receita.
+      // Se o código não for legível na foto, cai para a leitura por IA.
+      let nfe: Awaited<ReturnType<typeof apiService.extractNfeWithGemini>>['data'] | null = null;
+      try {
+        const chave = await extrairChaveDaImagem(file);
+        if (chave) {
+          const oficial = await apiService.consultarNfePorChave(chave);
+          if (oficial.success && oficial.data?.numero_nfe) {
+            nfe = oficial.data;
+          }
+        }
+      } catch (barcodeError) {
+        console.warn('[nfe] consulta por chave falhou; caindo para leitura por IA:', barcodeError);
       }
 
-      const nfe = response.data;
+      if (!nfe) {
+        const response = await apiService.extractNfeWithGemini(file);
+
+        if (!response.success || !response.data) {
+          throw new Error(response.error || 'Não foi possível ler a NF-e pela IA.');
+        }
+
+        nfe = response.data;
+      }
       const newData = createEmptyStructuredData();
 
       newData.nf_data.numero = nfe.numero_nfe || '';

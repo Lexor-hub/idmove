@@ -8,6 +8,7 @@ import { useToast } from '@/hooks/use-toast';
 import { apiService } from '@/services/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { processImageOCR } from '@/services/ocrService';
+import { extrairChaveDaImagem } from '@/lib/nfe-barcode';
 import {
   FIXED_NFE_EMITENTE_CNPJ,
   FIXED_NFE_EMITENTE_NAME,
@@ -164,6 +165,27 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
       if (data.nome_destinatario) setClientName(data.nome_destinatario);
       if (data.endereco_destinatario) setDeliveryAddress(data.endereco_destinatario);
     };
+
+    // Caminho primário: código de barras da DANFE -> XML oficial da Receita.
+    // Dados perfeitos por construção; IA vira fallback para foto sem código legível.
+    try {
+      const chave = await extrairChaveDaImagem(nfImageFile);
+      if (chave) {
+        const oficial = await apiService.consultarNfePorChave(chave);
+        if (oficial.success && oficial.data?.numero_nfe) {
+          applyExtractedData(oficial.data);
+          setOcrDone(true);
+          toast({
+            title: 'NF-e lida pelo código de barras',
+            description: 'Dados oficiais da Receita. Confira e salve.',
+          });
+          setGeminiLoading(false);
+          return;
+        }
+      }
+    } catch (barcodeError) {
+      console.warn('[nfe] consulta por chave falhou; caindo para leitura por IA:', barcodeError);
+    }
 
     try {
       const response = await apiService.extractNfeWithGemini(nfImageFile);
