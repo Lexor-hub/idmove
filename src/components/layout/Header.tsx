@@ -28,6 +28,7 @@ import {
 import { LogOut, User, Settings, Truck, Menu, Home, BarChart3, Package, Users, MapPin, FileText, Building } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useState, type MouseEvent } from 'react';
+import { APP_VERSION } from '@/lib/version';
 
 export const Header = () => {
   const { user, company, logout } = useAuth();
@@ -142,6 +143,9 @@ export const Header = () => {
             <div className="relative flex items-center justify-center p-1 group-hover:scale-105 transition-transform duration-500">
               <div className="absolute inset-0 bg-primary/20 blur-xl rounded-full group-hover:bg-primary/40 transition-colors duration-500" />
               <img src="/logo_final.png" alt="ID MOVE Premium Logo" className="h-12 w-auto object-contain relative z-10 drop-shadow-[0_0_8px_rgba(242,139,4,0.6)]" />
+              <span className="absolute -bottom-1 right-0 z-10 text-[9px] leading-none text-muted-foreground/70 font-mono">
+                v{APP_VERSION}
+              </span>
             </div>
             <div className="hidden sm:block">
               <h1 className="text-xl font-extrabold tracking-tight text-foreground drop-shadow-sm">ID <span className="text-primary text-glow">MOVE</span></h1>
