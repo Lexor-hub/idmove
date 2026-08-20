@@ -780,6 +780,35 @@ class ApiService {
     });
   }
 
+  async getActiveCompanyDrivers() {
+    return this.run(async () => {
+      const ctx = await this.getContext();
+      let query = supabase
+        .from('drivers')
+        .select('id,name,current_status,updated_at')
+        .eq('status', 'ATIVO')
+        .in('current_status', ['online', 'active', 'idle'])
+        .order('name');
+
+      if (ctx.profile.role !== 'MASTER') {
+        if (!ctx.profile.company_id) {
+          throw new Error('Usuario sem empresa vinculada.');
+        }
+        query = query.eq('company_id', ctx.profile.company_id);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+
+      return (data || []).map((driver) => ({
+        id: String(driver.id),
+        name: driver.name || 'Motorista',
+        current_status: driver.current_status,
+        updated_at: driver.updated_at,
+      }));
+    });
+  }
+
   async createDriver(payload: Record<string, any>) {
     return this.run(async () => {
       const companyId = await this.companyId();
@@ -1526,13 +1555,18 @@ class ApiService {
         nfNumber: delivery.nf_number,
         nf_number: delivery.nf_number,
         date: delivery.created_at,
+        created_at: delivery.created_at,
+        scheduled_date: delivery.scheduled_date || null,
+        delivered_at: delivery.delivered_at || null,
         status: delivery.status || 'PENDING',
         volume: delivery.delivery_volume || 1,
         value: asNumber(delivery.merchandise_value, 0),
         driver: delivery.driver_name,
+        driver_id: delivery.driver_id || null,
         delivery_address: delivery.delivery_address || delivery.client_address || null,
         client_address: delivery.client_address || delivery.delivery_address || null,
         client_name: delivery.client_name || delivery.client_name_extracted || null,
+        notes: delivery.notes || null,
         receipt_image_url: delivery.receipt_image_url,
         receipt_notes: delivery.receipt_notes || null,
         source_document_url: delivery.source_document_url || null,

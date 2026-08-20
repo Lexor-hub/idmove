@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { StatsCard } from '@/components/dashboard/StatsCard';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -16,6 +16,11 @@ import {
   Truck,
   AlertCircle,
   Image as ImageIcon,
+  Activity,
+  Building2,
+  Boxes,
+  CalendarDays,
+  UserRound,
 } from 'lucide-react';
 import { apiService } from '@/services/api';
 import { useToast } from '@/hooks/use-toast';
@@ -33,8 +38,12 @@ interface ClientDelivery {
   statusPtBR: DeliveryStatusPtBR;
   volume: number;
   value: number;
+  clientName?: string | null;
   driver?: string;
   address?: string;
+  scheduledDate?: string | null;
+  deliveredAt?: string | null;
+  notes?: string | null;
   receipt_image_url?: string | null;
   receipt_notes?: string | null;
   source_document_url?: string | null;
@@ -47,6 +56,66 @@ interface ClientDelivery {
     created_at?: string;
   } | null;
 }
+
+interface ActiveDriver {
+  id: string;
+  name: string;
+  currentStatus: 'online' | 'active' | 'idle';
+  updatedAt?: string | null;
+}
+
+interface DeliveryReportRow {
+  id: string | number;
+  nfNumber?: string | null;
+  nf_number?: string | null;
+  date?: string | null;
+  created_at?: string | null;
+  scheduled_date?: string | null;
+  delivered_at?: string | null;
+  status?: string | null;
+  volume?: number | null;
+  value?: number | null;
+  client_name?: string | null;
+  driver?: string | null;
+  delivery_address?: string | null;
+  client_address?: string | null;
+  notes?: string | null;
+  receipt_image_url?: string | null;
+  receipt_notes?: string | null;
+  source_document_url?: string | null;
+  attempt_number?: number | null;
+  latest_occurrence?: ClientDelivery['latest_occurrence'];
+}
+
+interface ActiveDriverRow {
+  id: string | number;
+  name?: string | null;
+  current_status: ActiveDriver['currentStatus'];
+  updated_at?: string | null;
+}
+
+const activeDriverStatus: Record<ActiveDriver['currentStatus'], string> = {
+  online: 'Online',
+  active: 'Em operação',
+  idle: 'Aguardando',
+};
+
+const formatCurrency = (value: number) =>
+  new Intl.NumberFormat('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+  }).format(value);
+
+const formatDate = (value?: string | null, includeTime = false) => {
+  if (!value) return '—';
+  const normalizedValue = /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00` : value;
+  const date = new Date(normalizedValue);
+  if (Number.isNaN(date.getTime())) return '—';
+
+  return date.toLocaleString('pt-BR', includeTime
+    ? { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }
+    : { day: '2-digit', month: '2-digit', year: 'numeric' });
+};
 
 const statusToPtBR = (status: string): DeliveryStatusPtBR => {
   switch (status) {
@@ -107,21 +176,22 @@ const getStatusIcon = (status: DeliveryStatusPtBR) => {
 
 export const ClientDashboard = () => {
   const [deliveries, setDeliveries] = useState<ClientDelivery[]>([]);
+  const [activeDrivers, setActiveDrivers] = useState<ActiveDriver[]>([]);
   const [filteredDeliveries, setFilteredDeliveries] = useState<ClientDelivery[]>([]);
   const [stats, setStats] = useState({
     totalEntregas: 0,
     entregasRealizadas: 0,
     emTransito: 0,
     pendentes: 0,
+    motoristasAtivos: 0,
   });
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedDelivery, setSelectedDelivery] = useState<ClientDelivery | null>(null);
   const [receiptImage, setReceiptImage] = useState<string | null>(null);
   const [receiptLoading, setReceiptLoading] = useState(false);
   const [showReceiptModal, setShowReceiptModal] = useState(false);
   const { toast } = useToast();
-  const { user } = useAuth();
+  const { company } = useAuth();
 
   const statusChartData = useMemo(() => {
     const data = [
@@ -139,10 +209,6 @@ export const ClientDashboard = () => {
   );
 
   useEffect(() => {
-    loadClientData();
-  }, []);
-
-  useEffect(() => {
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
       setFilteredDeliveries(
@@ -150,7 +216,9 @@ export const ClientDashboard = () => {
           (d) =>
             d.nfNumber.toLowerCase().includes(query) ||
             d.statusPtBR.toLowerCase().includes(query) ||
-            (d.driver && d.driver.toLowerCase().includes(query))
+            (d.driver && d.driver.toLowerCase().includes(query)) ||
+            (d.clientName && d.clientName.toLowerCase().includes(query)) ||
+            (d.address && d.address.toLowerCase().includes(query))
         )
       );
     } else {
@@ -158,23 +226,32 @@ export const ClientDashboard = () => {
     }
   }, [searchQuery, deliveries]);
 
-  const loadClientData = async () => {
+  const loadClientData = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
-      const response = await apiService.getDeliveryReports({ client: 'current' });
-      if (response.success && response.data) {
-        const mapped: ClientDelivery[] = (response.data as any[]).map((d: any) => {
-          const statusPtBR = statusToPtBR(d.status);
+      const [deliveriesResponse, driversResponse] = await Promise.all([
+        apiService.getDeliveryReports(),
+        apiService.getActiveCompanyDrivers(),
+      ]);
+
+      if (deliveriesResponse.success && deliveriesResponse.data) {
+        const mapped: ClientDelivery[] = (deliveriesResponse.data as DeliveryReportRow[]).map((d) => {
+          const statusPtBR = statusToPtBR(d.status || 'PENDING');
           return {
-            id: d.id,
+            id: String(d.id),
             nfNumber: d.nfNumber || d.nf_number || '',
             nf_number: d.nf_number || d.nfNumber || '',
             date: d.date || d.created_at || '',
-            status: d.status,
+            status: d.status || 'PENDING',
             statusPtBR,
             volume: d.volume || 0,
             value: d.value || 0,
+            clientName: d.client_name || null,
             driver: d.driver || null,
             address: d.delivery_address || d.client_address || null,
+            scheduledDate: d.scheduled_date || null,
+            deliveredAt: d.delivered_at || null,
+            notes: d.notes || null,
             receipt_image_url: d.receipt_image_url || null,
             receipt_notes: d.receipt_notes || null,
             source_document_url: d.source_document_url || null,
@@ -196,18 +273,44 @@ export const ClientDashboard = () => {
           entregasRealizadas,
           emTransito,
           pendentes,
+          motoristasAtivos: driversResponse.success && Array.isArray(driversResponse.data)
+            ? driversResponse.data.length
+            : 0,
         });
       }
+
+      if (driversResponse.success && Array.isArray(driversResponse.data)) {
+        const mappedDrivers = (driversResponse.data as ActiveDriverRow[]).map((driver): ActiveDriver => ({
+          id: String(driver.id),
+          name: String(driver.name || 'Motorista'),
+          currentStatus: driver.current_status as ActiveDriver['currentStatus'],
+          updatedAt: driver.updated_at || null,
+        }));
+        setActiveDrivers(mappedDrivers);
+        setStats((current) => ({ ...current, motoristasAtivos: mappedDrivers.length }));
+      }
+
+      if (!deliveriesResponse.success && !driversResponse.success && !silent) {
+        throw new Error(deliveriesResponse.error || driversResponse.error || 'Falha ao carregar os dados');
+      }
     } catch (error) {
-      toast({
-        title: "Erro ao carregar dados",
-        description: "Não foi possível carregar suas entregas",
-        variant: "destructive",
-      });
+      if (!silent) {
+        toast({
+          title: "Erro ao carregar dados",
+          description: "Não foi possível carregar os dados da empresa",
+          variant: "destructive",
+        });
+      }
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
-  };
+  }, [toast]);
+
+  useEffect(() => {
+    void loadClientData();
+    const refreshInterval = window.setInterval(() => void loadClientData(true), 60_000);
+    return () => window.clearInterval(refreshInterval);
+  }, [loadClientData]);
 
   const handleViewReceipt = async (url: string) => {
     setReceiptLoading(true);
@@ -220,10 +323,10 @@ export const ClientDashboard = () => {
       } else {
         throw new Error("Não foi possível carregar a imagem.");
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       toast({
         title: "Erro ao carregar comprovante",
-        description: error.message || "Ocorreu um problema.",
+        description: error instanceof Error ? error.message : "Ocorreu um problema.",
         variant: "destructive",
       });
       setShowReceiptModal(false);
@@ -243,17 +346,21 @@ export const ClientDashboard = () => {
   return (
     <div className="container mx-auto px-4 md:px-6 py-6 space-y-6">
         {/* Page Header */}
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-bold tracking-tight">Minhas Entregas</h1>
+            <div className="mb-2 flex items-center gap-2 text-sm font-medium text-primary">
+              <Building2 className="h-4 w-4" />
+              {company?.name || 'Empresa vinculada'}
+            </div>
+            <h1 className="text-3xl font-bold tracking-tight">Painel de Entregas</h1>
             <p className="text-muted-foreground mt-1">
-              Acompanhe o status das suas mercadorias
+              Visão completa da operação da empresa definida pelo administrador
             </p>
           </div>
         </div>
 
         {/* Stats Grid */}
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 max-w-full overflow-x-auto">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5 max-w-full">
           <StatsCard
             title="Total de Entregas"
             value={stats.totalEntregas}
@@ -282,6 +389,13 @@ export const ClientDashboard = () => {
             description="Aguardando envio"
             variant="default"
           />
+          <StatsCard
+            title="Motoristas Ativos"
+            value={stats.motoristasAtivos}
+            icon={Activity}
+            description="Online na empresa"
+            variant="success"
+          />
         </div>
 
         {/* Search Bar */}
@@ -290,7 +404,7 @@ export const ClientDashboard = () => {
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="Buscar por NF, status ou motorista..."
+                placeholder="Buscar por NF, cliente, status, endereço ou motorista..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-9"
@@ -321,20 +435,12 @@ export const ClientDashboard = () => {
                 ) : (
                   <div className="space-y-3">
                     {filteredDeliveries.map((delivery) => (
-                      <Card key={delivery.id} className="border hover:shadow-sm transition-shadow">
+                      <Card key={delivery.id} data-testid="entrega-item" className="border hover:shadow-sm transition-shadow">
                         <CardContent className="pt-4 pb-4">
                           <div className="flex items-start justify-between mb-2">
                             <div>
                               <p className="font-semibold text-base">NF {delivery.nfNumber}</p>
-                              <p className="text-sm text-muted-foreground">
-                                {delivery.date
-                                  ? new Date(delivery.date).toLocaleDateString('pt-BR', {
-                                      day: '2-digit',
-                                      month: '2-digit',
-                                      year: 'numeric',
-                                    })
-                                  : '—'}
-                              </p>
+                              <p className="text-sm text-muted-foreground">Criada em {formatDate(delivery.date)}</p>
                             </div>
                             <Badge className={`gap-1 ${getStatusBadgeStyle(delivery.statusPtBR)}`}>
                               {getStatusIcon(delivery.statusPtBR)}
@@ -342,17 +448,35 @@ export const ClientDashboard = () => {
                             </Badge>
                           </div>
                           
-                          <div className="space-y-1.5 text-sm">
-                            {delivery.driver && (
-                              <div className="flex items-center gap-2">
-                                <Truck className="h-3.5 w-3.5 text-muted-foreground" />
-                                <span className="text-muted-foreground">Motorista: {delivery.driver}</span>
+                          <div className="grid gap-2 text-sm sm:grid-cols-2">
+                            <div className="flex items-center gap-2">
+                              <UserRound className="h-3.5 w-3.5 text-muted-foreground" />
+                              <span className="text-muted-foreground">Cliente: {delivery.clientName || 'Não informado'}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Truck className="h-3.5 w-3.5 text-muted-foreground" />
+                              <span className="text-muted-foreground">Motorista: {delivery.driver || 'Não atribuído'}</span>
+                            </div>
+                            {delivery.address && (
+                              <div className="flex items-start gap-2 sm:col-span-2">
+                                <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
+                                <span className="text-muted-foreground">{delivery.address}</span>
                               </div>
                             )}
-                            {delivery.address && (
-                              <div className="flex items-center gap-2">
-                                <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
-                                <span className="text-muted-foreground truncate">{delivery.address}</span>
+                            <div className="flex items-center gap-2">
+                              <CalendarDays className="h-3.5 w-3.5 text-muted-foreground" />
+                              <span className="text-muted-foreground">Programada: {formatDate(delivery.scheduledDate)}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Boxes className="h-3.5 w-3.5 text-muted-foreground" />
+                              <span className="text-muted-foreground">
+                                {delivery.volume} {delivery.volume === 1 ? 'volume' : 'volumes'} · {formatCurrency(delivery.value)}
+                              </span>
+                            </div>
+                            {delivery.deliveredAt && (
+                              <div className="flex items-center gap-2 sm:col-span-2">
+                                <CheckCircle className="h-3.5 w-3.5 text-green-600" />
+                                <span className="text-muted-foreground">Concluída em {formatDate(delivery.deliveredAt, true)}</span>
                               </div>
                             )}
                             {delivery.attempt_number && delivery.attempt_number > 1 && (
@@ -361,13 +485,18 @@ export const ClientDashboard = () => {
                                 <span className="text-muted-foreground">Tentativa {delivery.attempt_number}</span>
                               </div>
                             )}
+                            {delivery.notes && (
+                              <p className="rounded-md bg-muted/50 p-2 text-xs text-muted-foreground sm:col-span-2">
+                                Observação: {delivery.notes}
+                              </p>
+                            )}
                           </div>
 
                           {delivery.statusPtBR === 'Problema' && delivery.latest_occurrence && (
                             <div className="mt-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm">
                               <div className="flex items-center gap-2 font-medium text-red-800">
                                 <AlertCircle className="h-4 w-4" />
-                                OcorrÃªncia registrada
+                                Ocorrência registrada
                               </div>
                               <p className="mt-1 text-red-700">{delivery.latest_occurrence.description}</p>
                               <div className="mt-2 space-y-1 text-xs text-red-700">
@@ -456,6 +585,45 @@ export const ClientDashboard = () => {
 
           {/* Sidebar */}
           <div className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center justify-between text-base">
+                  <span className="flex items-center gap-2">
+                    <Activity className="h-4 w-4" />
+                    Motoristas Ativos
+                  </span>
+                  <Badge variant="secondary" className="text-xs">{activeDrivers.length}</Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {activeDrivers.length === 0 ? (
+                  <p className="py-4 text-center text-sm text-muted-foreground">
+                    Nenhum motorista ativo no momento
+                  </p>
+                ) : (
+                  <div className="space-y-2" data-testid="motoristas-ativos">
+                    {activeDrivers.map((driver) => (
+                      <div
+                        key={driver.id}
+                        className="flex items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-emerald-900">{driver.name}</p>
+                          <p className="text-xs text-emerald-700">
+                            Atualizado em {formatDate(driver.updatedAt, true)}
+                          </p>
+                        </div>
+                        <Badge className="shrink-0 border-emerald-200 bg-white text-emerald-700">
+                          <span className="mr-1.5 h-2 w-2 rounded-full bg-emerald-500" />
+                          {activeDriverStatus[driver.currentStatus] || 'Ativo'}
+                        </Badge>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
             {/* Donut Chart */}
             <Card>
               <CardHeader>
