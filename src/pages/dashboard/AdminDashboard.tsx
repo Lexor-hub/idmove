@@ -221,7 +221,7 @@ export const AdminDashboard = () => {
         </div>
         <Button className="bg-gradient-primary" onClick={() => navigate('/dashboard/relatorios')}>
           <BarChart3 className="mr-2 h-4 w-4" />
-          Relatórios Completos
+          Histórico de Notas
         </Button>
       </div>
 

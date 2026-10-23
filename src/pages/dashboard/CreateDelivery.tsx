@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { AlertCircle, Eye, AlertTriangle } from 'lucide-react';
 import { apiService } from '@/services/api';
+import { HistoryPagination } from '@/components/ui/history-pagination';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
 import { SimpleDeliveryForm } from '@/components/delivery/SimpleDeliveryForm';
+import { todayBrt } from '@/lib/date';
 
 type DeliveryStatus = 'PENDING' | 'ASSIGNED' | 'IN_TRANSIT' | 'DELIVERED' | 'FAILED' | 'CANCELLED';
 
@@ -68,11 +70,11 @@ export const CreateDelivery = () => {
   const { toast } = useToast();
 
   // Filter states
-  const [filterDate, setFilterDate] = useState(new Date().toISOString().split('T')[0]);
+  const [filterDate, setFilterDate] = useState(todayBrt());
   const [filterStatus, setFilterStatus] = useState<DeliveryStatus | 'ALL'>('ALL');
   const [filterDriver, setFilterDriver] = useState('ALL');
 
-  const PAGE_SIZE = 10;
+  const [pageSize, setPageSize] = useState(50);
 
   useEffect(() => {
     loadInitialData();
@@ -159,10 +161,10 @@ export const CreateDelivery = () => {
   // Filtered and paginated deliveries
   const filteredDeliveries = deliveries;
   const paginatedDeliveries = filteredDeliveries.slice(
-    (currentPage - 1) * PAGE_SIZE,
-    currentPage * PAGE_SIZE
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize
   );
-  const totalPages = Math.ceil(filteredDeliveries.length / PAGE_SIZE);
+  const totalPages = Math.ceil(filteredDeliveries.length / pageSize);
 
   if (loading) {
     return (
@@ -177,9 +179,9 @@ export const CreateDelivery = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">📋 Entregas do Dia</h1>
+          <h1 className="text-3xl font-bold tracking-tight">{filterDate ? '📋 Entregas do Dia' : 'Histórico de Entregas'}</h1>
           <p className="text-muted-foreground mt-1">
-            Gerenciar entregas programadas para {formatDate(filterDate)}
+            {filterDate ? `Gerenciar entregas programadas para ${formatDate(filterDate)}` : 'Todas as notas fiscais e entregas cadastradas'}
           </p>
         </div>
         <Button onClick={handleNewDelivery} className="bg-gradient-primary">
@@ -205,6 +207,9 @@ export const CreateDelivery = () => {
                   setCurrentPage(1);
                 }}
               />
+              <Button variant="outline" size="sm" onClick={() => { setFilterDate(filterDate ? '' : todayBrt()); setCurrentPage(1); }}>
+                {filterDate ? 'Todo o histórico' : 'Somente hoje'}
+              </Button>
             </div>
 
             {/* Status Filter */}
@@ -339,29 +344,8 @@ export const CreateDelivery = () => {
           </div>
 
           {/* Pagination */}
-          {totalPages > 1 && (
-            <div className="flex items-center justify-between mt-6">
-              <div className="text-sm text-muted-foreground">
-                Página {currentPage} de {totalPages} ({filteredDeliveries.length} entregas)
-              </div>
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  disabled={currentPage === 1}
-                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                >
-                  Anterior
-                </Button>
-                <Button
-                  variant="outline"
-                  disabled={currentPage === totalPages}
-                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                >
-                  Próxima
-                </Button>
-              </div>
-            </div>
-          )}
+          <HistoryPagination total={filteredDeliveries.length} page={currentPage} pageSize={pageSize}
+            onPageChange={setCurrentPage} onPageSizeChange={(size) => { setPageSize(size); setCurrentPage(1); }} />
         </CardContent>
       </Card>
 

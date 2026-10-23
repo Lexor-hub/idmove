@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { apiService } from '@/services/api';
+import { HistoryPagination } from '@/components/ui/history-pagination';
 import { processImageOCR, type NFeExtractedData } from '@/services/ocrService';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -77,6 +78,7 @@ const Deliveries: React.FC = () => {
     const response = await apiService.getReceipts(filters);
     if (response.success && response.data) {
       setReceipts(response.data as Receipt[]);
+      setPage(1);
     } else {
       setError(response.error || 'Erro ao carregar canhotos');
     }
@@ -293,7 +295,7 @@ const Deliveries: React.FC = () => {
     (r.driver_name && r.driver_name.toLowerCase().includes(search.toLowerCase()))
   );
 
-  const PAGE_SIZE = 10;
+  const [pageSize, setPageSize] = useState(50);
   const exportToCSV = (data: Receipt[], filename: string) => {
     if (!data.length) return;
     const headers = ['ID Canhoto', 'ID Entrega', 'NF', 'CNPJ', 'Cliente', 'Arquivo', 'Motorista', 'Status', 'Validado', 'Criado em', 'URL Canhoto'];
@@ -316,7 +318,7 @@ const Deliveries: React.FC = () => {
     downloadCsv(filename, headers, rows);
   };
   const [page, setPage] = useState(1);
-  const paginatedReceipts = filteredReceipts.slice((page-1)*PAGE_SIZE, page*PAGE_SIZE);
+  const paginatedReceipts = filteredReceipts.slice((page-1)*pageSize, page*pageSize);
 
   const getStatusBadge = (status: string, validated: boolean) => {
     if (validated) {
@@ -349,7 +351,7 @@ const Deliveries: React.FC = () => {
             <Input
               placeholder="Buscar por NF, cliente, arquivo ou motorista"
               value={search}
-              onChange={e => setSearch(e.target.value)}
+              onChange={e => { setSearch(e.target.value); setPage(1); }}
               className="flex-1 min-h-[44px] text-base"
             />
             <Button type="submit" className="w-full min-h-[44px] text-base md:w-auto">Buscar</Button>
@@ -696,13 +698,8 @@ const Deliveries: React.FC = () => {
                 </tbody>
               </table>
             </div>
-            {filteredReceipts.length > PAGE_SIZE && (
-              <div className="flex justify-end gap-2 mt-4">
-                <Button disabled={page === 1} onClick={() => setPage(p => p - 1)} className="min-h-[44px] text-base">Anterior</Button>
-                <span className="flex items-center px-2">Página {page} de {Math.ceil(filteredReceipts.length / PAGE_SIZE)}</span>
-                <Button disabled={page === Math.ceil(filteredReceipts.length / PAGE_SIZE)} onClick={() => setPage(p => p + 1)} className="min-h-[44px] text-base">Próxima</Button>
-              </div>
-            )}
+            <HistoryPagination total={filteredReceipts.length} page={page} pageSize={pageSize}
+              onPageChange={setPage} onPageSizeChange={(size) => { setPageSize(size); setPage(1); }} />
           </CardContent>
         </Card>
       )}

@@ -6,6 +6,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Download, Search, ChevronLeft, ChevronRight, Loader2, AlertTriangle, FileText, BarChart3, Image as ImageIcon } from 'lucide-react';
 import { apiService } from '@/services/api';
+import { HistoryPagination } from '@/components/ui/history-pagination';
 import { useToast } from '@/hooks/use-toast';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -34,7 +35,7 @@ const DeliveriesReportTab = () => {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 10;
+  const [itemsPerPage, setItemsPerPage] = useState(50);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -78,7 +79,7 @@ const DeliveriesReportTab = () => {
   const paginatedDeliveries = useMemo(() => {
     const startIndex = (currentPage - 1) * itemsPerPage;
     return filteredDeliveries.slice(startIndex, startIndex + itemsPerPage);
-  }, [filteredDeliveries, currentPage]);
+  }, [filteredDeliveries, currentPage, itemsPerPage]);
 
   const exportToCSV = () => {
     if (filteredDeliveries.length === 0) {
@@ -167,17 +168,8 @@ const DeliveriesReportTab = () => {
             </TableBody>
           </Table>
         </div>
-        <div className="flex items-center justify-end space-x-2 py-4">
-          <span className="text-sm text-muted-foreground">
-            Página {currentPage} de {totalPages > 0 ? totalPages : 1}
-          </span>
-          <Button variant="outline" size="sm" onClick={() => setCurrentPage(p => p - 1)} disabled={currentPage === 1}>
-            <ChevronLeft className="h-4 w-4" /> Anterior
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => setCurrentPage(p => p + 1)} disabled={currentPage >= totalPages}>
-            Próxima <ChevronRight className="h-4 w-4" />
-          </Button>
-        </div>
+        <HistoryPagination total={filteredDeliveries.length} page={currentPage} pageSize={itemsPerPage}
+          onPageChange={setCurrentPage} onPageSizeChange={(size) => { setItemsPerPage(size); setCurrentPage(1); }} />
       </CardContent>
     </Card>
   );
@@ -396,6 +388,8 @@ const ReceiptsReportTab = () => {
   const [items, setItems] = useState<ReceiptItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const { toast } = useToast();
 
@@ -473,7 +467,7 @@ const ReceiptsReportTab = () => {
               placeholder="Buscar por NF, cliente, motorista..."
               className="pl-8 w-full"
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(e) => { setSearchTerm(e.target.value); setPage(1); }}
             />
           </div>
           <Button variant="outline" onClick={exportToCSV} disabled={filtered.length === 0 || loading}>
@@ -498,7 +492,7 @@ const ReceiptsReportTab = () => {
               {loading ? (
                 <TableRow><TableCell colSpan={5} className="h-24 text-center"><Loader2 className="h-6 w-6 animate-spin mx-auto" /></TableCell></TableRow>
               ) : filtered.length > 0 ? (
-                filtered.map((item) => (
+                filtered.slice((page - 1) * pageSize, page * pageSize).map((item) => (
                   <TableRow key={item.id}>
                     <TableCell className="font-medium">{item.nf_number || 'N/A'}</TableCell>
                     <TableCell>{item.client_name || 'N/A'}</TableCell>
@@ -526,6 +520,8 @@ const ReceiptsReportTab = () => {
             </TableBody>
           </Table>
         </div>
+        <HistoryPagination total={filtered.length} page={page} pageSize={pageSize}
+          onPageChange={setPage} onPageSizeChange={(size) => { setPageSize(size); setPage(1); }} />
       </CardContent>
 
       <Dialog open={!!previewUrl} onOpenChange={(open) => !open && setPreviewUrl(null)}>
@@ -559,6 +555,8 @@ const NfeReportTab = () => {
   const [items, setItems] = useState<NfeItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -630,7 +628,7 @@ const NfeReportTab = () => {
               placeholder="Buscar por NF, cliente, motorista ou endereco..."
               className="pl-8 w-full"
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(e) => { setSearchTerm(e.target.value); setPage(1); }}
             />
           </div>
           <Button variant="outline" onClick={exportToCSV} disabled={filtered.length === 0 || loading}>
@@ -656,7 +654,7 @@ const NfeReportTab = () => {
               {loading ? (
                 <TableRow><TableCell colSpan={6} className="h-24 text-center"><Loader2 className="h-6 w-6 animate-spin mx-auto" /></TableCell></TableRow>
               ) : filtered.length > 0 ? (
-                filtered.map((item) => (
+                filtered.slice((page - 1) * pageSize, page * pageSize).map((item) => (
                   <TableRow key={item.id}>
                     <TableCell className="font-medium">{item.nf_number || 'N/A'}</TableCell>
                     <TableCell>{item.client_name || 'N/A'}</TableCell>
@@ -680,6 +678,8 @@ const NfeReportTab = () => {
             </TableBody>
           </Table>
         </div>
+        <HistoryPagination total={filtered.length} page={page} pageSize={pageSize}
+          onPageChange={setPage} onPageSizeChange={(size) => { setPageSize(size); setPage(1); }} />
       </CardContent>
     </Card>
   );

@@ -3,6 +3,7 @@ import type { CompanyRow, DeliveryStatus, DriverStatus, ProfileRow } from '@/int
 import { todayBrt } from '@/lib/date';
 import { normalizeBrazilianDocument } from '@/lib/documents';
 import { normalizeRole } from '@/lib/roles';
+import { fetchAllPages } from '@/lib/pagination';
 
 export type ApiResponse<T> = { success: boolean; data?: T; error?: string };
 
@@ -899,8 +900,10 @@ class ApiService {
     return this.run(async () => {
       let query = supabase
         .from('deliveries')
-        .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,notes,created_at)')
-        .order('created_at', { ascending: false });
+        .select('*, drivers(name), clients(name), delivery_receipts(id,file_path,file_url,filename,status,notes,created_at)', { count: 'exact' })
+        .lte('created_at', new Date().toISOString())
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false });
 
       const ctx = await this.getContext();
       if (ctx.profile.role !== 'MASTER') {
@@ -922,9 +925,8 @@ class ApiService {
         query = query.eq('client_id', ctx.clientId);
       }
 
-      const { data, error } = await query;
-      if (error) throw error;
-      return (data || []).map((delivery) => this.mapDelivery(delivery));
+      const data = await fetchAllPages((from, to) => query.range(from, to));
+      return data.map((delivery) => this.mapDelivery(delivery));
     });
   }
 
@@ -1481,22 +1483,15 @@ class ApiService {
     return this.run(async () => {
       const ctx = await this.getContext();
 
-      // CLIENT: limita por client_id (busca os IDs das entregas próprias antes)
-      // Exceção: clientes "demo" (view_company_data=true) veem tudo da empresa.
-      let allowedDeliveryIds: string[] | null = null;
-      if (ctx.profile.role === 'CLIENT' && ctx.clientId && !ctx.profile.view_company_data) {
-        const { data: deliveryRows } = await supabase
-          .from('deliveries')
-          .select('id')
-          .eq('client_id', ctx.clientId);
-        allowedDeliveryIds = (deliveryRows || []).map((row: any) => String(row.id));
-        if (allowedDeliveryIds.length === 0) return [];
-      }
+      const ownClientOnly = ctx.profile.role === 'CLIENT' && ctx.clientId && !ctx.profile.view_company_data;
+      const deliveryJoin = ownClientOnly ? 'deliveries!inner' : 'deliveries';
 
       let query = supabase
         .from('delivery_receipts')
-        .select('*, deliveries(nf_number,client_name,client_id,delivered_at,scheduled_date), drivers(name)')
-        .order('created_at', { ascending: false });
+        .select(`*, ${deliveryJoin}(nf_number,client_name,client_id,delivered_at,scheduled_date), drivers(name)`, { count: 'exact' })
+        .lte('created_at', new Date().toISOString())
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false });
 
       if (ctx.profile.role !== 'MASTER') {
         query = query.eq('company_id', ctx.profile.company_id);
@@ -1504,18 +1499,15 @@ class ApiService {
       if (ctx.profile.role === 'DRIVER' && ctx.driverId) {
         query = query.eq('driver_id', ctx.driverId);
       }
-      if (allowedDeliveryIds) {
-        query = query.in('delivery_id', allowedDeliveryIds);
-      }
+      if (ownClientOnly) query = query.eq('deliveries.client_id', ctx.clientId);
 
       if (filters?.delivery_id) query = query.eq('delivery_id', filters.delivery_id);
       if (filters?.driver_id) query = query.eq('driver_id', filters.driver_id);
-      if (filters?.date_from) query = query.gte('created_at', filters.date_from);
-      if (filters?.date_to) query = query.lte('created_at', filters.date_to);
+      if (filters?.date_from) query = query.gte('created_at', `${filters.date_from}T00:00:00-03:00`);
+      if (filters?.date_to) query = query.lte('created_at', `${filters.date_to}T23:59:59.999999-03:00`);
 
-      const { data, error } = await query;
-      if (error) throw error;
-      return (data || []).map((receipt: any) => ({
+      const data = await fetchAllPages((from, to) => query.range(from, to));
+      return data.map((receipt: any) => ({
         ...receipt,
         id: String(receipt.id),
         receipt_image_url: receipt.file_url || publicUrl('receipts', receipt.file_path),
@@ -1552,14 +1544,21 @@ class ApiService {
 
       const deliveryIds = response.data.map((delivery) => String(delivery.id));
       const occurrenceByDelivery = new Map<string, any>();
-      if (deliveryIds.length > 0) {
-        const { data: occurrences, error } = await supabase
-          .from('occurrences')
-          .select('*, drivers(name)')
-          .in('delivery_id', deliveryIds)
-          .order('created_at', { ascending: false });
-        if (error) throw error;
-        (occurrences || []).forEach((occurrence: any) => {
+      // Bound URL size as the history grows; load independent batches concurrently.
+      for (let start = 0; start < deliveryIds.length; start += 400) {
+        const batches = [];
+        for (let offset = start; offset < Math.min(start + 400, deliveryIds.length); offset += 100) {
+          const ids = deliveryIds.slice(offset, offset + 100);
+          batches.push(fetchAllPages((from, to) => supabase
+            .from('occurrences')
+            .select('*, drivers(name)', { count: 'exact' })
+            .in('delivery_id', ids)
+            .order('created_at', { ascending: false })
+            .order('id', { ascending: false })
+            .range(from, to)));
+        }
+        const results = await Promise.all(batches);
+        results.flat().forEach((occurrence) => {
           const key = String(occurrence.delivery_id);
           if (!occurrenceByDelivery.has(key)) {
             occurrenceByDelivery.set(key, {
@@ -1902,14 +1901,15 @@ class ApiService {
 
       let deliveriesQuery = supabase
         .from('deliveries')
-        .select('id,driver_id,status,scheduled_date')
+        .select('id,driver_id,status,scheduled_date', { count: 'exact' })
+        .lte('created_at', new Date().toISOString())
+        .order('id')
         .in('driver_id', driverIds);
 
       if (filters?.start_date) deliveriesQuery = deliveriesQuery.gte('scheduled_date', filters.start_date);
       if (filters?.end_date) deliveriesQuery = deliveriesQuery.lte('scheduled_date', filters.end_date);
 
-      const { data: deliveries, error } = await deliveriesQuery;
-      if (error) throw error;
+      const deliveries = await fetchAllPages((from, to) => deliveriesQuery.range(from, to));
 
       const byDriver = new Map<string, any[]>();
       (deliveries || []).forEach((delivery: any) => {
