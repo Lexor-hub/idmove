@@ -3,6 +3,7 @@ import { User, Company, AuthContextType, LoginCredentials } from '@/types/auth';
 import { apiService } from '@/services/api';
 import { useToast } from '@/hooks/use-toast';
 import { normalizeRole } from '@/lib/roles';
+import { supabase } from '@/integrations/supabase/client';
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
@@ -20,9 +21,6 @@ const clearStoredAuth = () => {
   localStorage.removeItem('temp_user');
 };
 
-const isDriverWithoutOperationalLink = (userData: User) =>
-  normalizeRole(userData.user_type || userData.role) === 'DRIVER' && !userData.driver_id;
-
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (!context) {
@@ -36,77 +34,84 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [company, setCompany] = useState<Company | null>(null);
   const [authStep, setAuthStep] = useState<'login' | 'company' | 'complete'>('login');
   const [loading, setLoading] = useState(true);
+  const [initializing, setInitializing] = useState(true);
   const { toast } = useToast();
 
   useEffect(() => {
-    const restoreAuth = async () => {
-      // Check for stored auth data on app load
-      const token = localStorage.getItem('id_move_token');
-      const userData = localStorage.getItem('id_move_user');
-      const companyData = localStorage.getItem('id_move_company');
-
-      console.log('Verificando dados de autenticação...');
-      console.log('Token presente:', !!token);
-      console.log('User data presente:', !!userData);
-
-      if (!token || !userData) {
-        setAuthStep('login');
-        setLoading(false);
-        return;
-      }
-
-      try {
-        const parsedUser = JSON.parse(userData);
-        let restoredUser = mapUser(parsedUser);
-        let restoredCompany = companyData ? JSON.parse(companyData) : null;
-
-        if (isDriverWithoutOperationalLink(restoredUser)) {
-          const refreshed = await apiService.refreshCurrentSession();
-          if (refreshed.success && refreshed.data) {
-            restoredUser = mapUser(refreshed.data.user);
-            restoredCompany = refreshed.data.company || restoredCompany;
-            localStorage.setItem('id_move_user', JSON.stringify(restoredUser));
-            if (restoredCompany) {
-              localStorage.setItem('id_move_company', JSON.stringify(restoredCompany));
-            }
-          }
-        }
-
-        console.log('Usuário carregado:', restoredUser);
-        setUser(restoredUser);
-        if (restoredCompany) {
-          console.log('Empresa carregada:', restoredCompany);
-          setCompany(restoredCompany);
-          setAuthStep('complete');
-        } else {
-          // Se tem token mas não tem empresa, precisa selecionar
-          setAuthStep('company');
-        }
-      } catch (error) {
-        console.error('Erro ao carregar dados do usuário:', error);
-        clearStoredAuth();
-        setAuthStep('login');
-      } finally {
-        setLoading(false);
-      }
+    let cancelled = false;
+    const resetAuth = () => {
+      apiService.clearContext();
+      clearStoredAuth();
+      setUser(null);
+      setCompany(null);
+      setAuthStep('login');
     };
 
+    // Keep this callback synchronous: awaiting Supabase calls here can lock Auth.
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT') resetAuth();
+      if (event === 'TOKEN_REFRESHED' && session) {
+        localStorage.setItem('id_move_token', session.access_token);
+      }
+    });
+
+    const restoreAuth = async () => {
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        if (cancelled) return;
+        if (error || !data.session) {
+          resetAuth();
+          return;
+        }
+
+        // The Supabase session is authoritative; legacy localStorage may be stale
+        // or missing even though the refresh token still works.
+        const refreshed = await apiService.refreshCurrentSession();
+        if (cancelled) return;
+        if (!refreshed.success || !refreshed.data) {
+          resetAuth();
+          return;
+        }
+        const restoredUser = mapUser(refreshed.data.user);
+        let restoredCompany = refreshed.data.company;
+        if (restoredUser.role === 'MASTER') {
+          const saved = localStorage.getItem('id_move_company');
+          if (saved) {
+            try {
+              const selected = await apiService.selectCompany(JSON.parse(saved).id);
+              if (cancelled) return;
+              if (selected.success && selected.data) restoredCompany = selected.data.company;
+            } catch { /* An invalid saved company falls back to the profile company. */ }
+          }
+        }
+        localStorage.setItem('id_move_token', refreshed.data.token);
+        localStorage.setItem('id_move_user', JSON.stringify(restoredUser));
+        if (restoredCompany) localStorage.setItem('id_move_company', JSON.stringify(restoredCompany));
+        else localStorage.removeItem('id_move_company');
+        setUser(restoredUser);
+        setCompany(restoredCompany || null);
+        setAuthStep(restoredCompany ? 'complete' : 'company');
+      } catch {
+        if (!cancelled) resetAuth();
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+          setInitializing(false);
+        }
+      }
+    };
     void restoreAuth();
+    return () => { cancelled = true; subscription.unsubscribe(); };
   }, []);
 
   const login = async (credentials: LoginCredentials) => {
     try {
       setLoading(true);
-      console.log('=== DEBUG LOGIN ===');
-      console.log('Fazendo login com credenciais:', credentials);
       
       const response = await apiService.login(credentials);
-      console.log('Resposta do login:', response);
       
       if (response.success && response.data) {
         const { user: userData, token, company: selectedCompany } = response.data;
-        console.log('Token recebido:', token ? 'Presente' : 'Ausente');
-        console.log('User data recebido:', userData);
         
         const mappedUser = mapUser(userData);
 
@@ -167,8 +172,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         localStorage.removeItem('temp_token');
         localStorage.removeItem('temp_user');
         
-        console.log('Token final salvo:', token);
-        console.log('Usuário final salvo:', mappedUser);
         
         setUser(mappedUser);
         setCompany(selectedCompany);
@@ -224,6 +227,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         selectCompany,
         logout,
         loading,
+        initializing,
       }}
     >
       {children}

@@ -522,7 +522,7 @@ export const DriverDashboard = () => {
         try {
             const response = await apiService.getDeliveries({
                  driver_id: driverIdToFetch,
-                 scheduled_date: todayBrt(),
+                 operational_date: todayBrt(),
             });
 
             if (response.success && Array.isArray(response.data) && response.data.length > 0) {
@@ -580,13 +580,14 @@ export const DriverDashboard = () => {
 
     // Detecta fase automaticamente baseado no status das entregas
     useEffect(() => {
-        const hasInTransitDeliveries = deliveries.some(d => d.status === 'EM_ANDAMENTO');
-        if (hasInTransitDeliveries) {
+        const hasInTransitDeliveries = deliveries.some(d => d.originalApiStatus === 'IN_TRANSIT');
+        const hasCompletedDeliveries = deliveries.some(d => d.status === 'REALIZADA' || d.status === 'PROBLEMA');
+        if (routeStarted || hasInTransitDeliveries || hasCompletedDeliveries) {
             setPhase('ON_ROUTE');
         } else {
             setPhase('LOADING');
         }
-    }, [deliveries]);
+    }, [deliveries, routeStarted]);
 
     useEffect(() => {
         if (!driverLinkChecked) {
@@ -642,21 +643,11 @@ export const DriverDashboard = () => {
             title: "Dia iniciado!",
             description: "Você pode agora fotografar os canhotos e iniciar sua rota",
         });
-        // Auto-inicia tracking GPS junto com "Iniciar Dia" — sem isso o motorista
-        // operava o dia todo sem aparecer no painel de rastreamento (visto em prod
-        // 03/06/2026: Rafael, João, Diego fizeram entregas mas nunca abriram sessão
-        // de tracking porque pulavam a etapa "Iniciar Rota" ou caíam no return
-        // silencioso de startRoute quando entregas ainda não estavam ASSIGNED).
         if (!hasLocationConsent) {
             setShowConsentDialog(true);
             return;
         }
-        if (!routeStarted) {
-            setRouteStarted(true);
-            void startLocationTracking().then((ok) => {
-                if (!ok) setRouteStarted(false);
-            });
-        }
+        void startRoute();
     };
 
     const handleStartRoute = () => {
@@ -772,15 +763,7 @@ const handleDisableLocation = () => {
             localStorage.setItem('driver_location_consent', 'true');
         }
         setShowConsentDialog(false);
-        // Dispara tracking imediato após consentimento — antes precisava clicar
-        // "Iniciar Rota" depois, e se 0 entregas ASSIGNED esse botão abortava
-        // silenciosamente sem ativar GPS.
-        if (!routeStarted) {
-            setRouteStarted(true);
-            void startLocationTracking().then((ok) => {
-                if (!ok) setRouteStarted(false);
-            });
-        }
+        void startRoute();
     };
 
     const handleConsentDecline = () => {
@@ -835,6 +818,7 @@ const handleDisableLocation = () => {
                 }
             }
 
+            setDayStarted(true);
             if (assignedDeliveryIds.length === 0) {
                 toast({
                     title: 'Rastreamento ativo',
@@ -850,6 +834,7 @@ const handleDisableLocation = () => {
                     title: 'Rota iniciada!',
                     description: 'Boa viagem! Lembre-se de fotografar os comprovantes.'
                 });
+                await loadTodayDeliveries();
                 setPhase('ON_ROUTE');
             } else {
                 throw new Error((response as any).error || 'Erro ao marcar entregas em trânsito');
@@ -861,7 +846,7 @@ const handleDisableLocation = () => {
                 variant: 'destructive'
             });
         }
-    }, [deliveries, routeStarted, toast, startLocationTracking]);
+    }, [deliveries, routeStarted, toast, startLocationTracking, loadTodayDeliveries]);
 
     const getStatusColor = (status: string) => {
         switch (status) {
@@ -955,7 +940,7 @@ const handleDisableLocation = () => {
                 setDeliveries(prevDeliveries =>
                     prevDeliveries.map(d =>
                         d.id === selectedDelivery.id
-                            ? { ...d, status: 'REALIZADA', hasReceipt: true, receiptImageUrl: response.data?.url || response.data?.publicUrl || null }
+                            ? { ...d, status: 'REALIZADA', originalApiStatus: 'DELIVERED', hasReceipt: true, receiptImageUrl: response.data?.receipt_image_url || response.data?.image_url || null }
                             : d
                     )
                 );
@@ -1374,31 +1359,13 @@ const handleDisableLocation = () => {
                     </CardTitle>
                 </CardHeader>
                 <CardContent className="grid gap-3">
-                    {phase === 'LOADING' ? (
-                        <Button
-                            variant="outline"
-                            className="justify-start h-12"
-                            onClick={() => setShowAddDelivery(true)}
-                        >
-                            <Plus className="mr-3 h-4 w-4" />
-                            <div className="text-left">
-                                <div className="font-medium">+ Adicionar NF</div>
-                                <div className="text-xs text-gray-500">Adicione novas entregas</div>
-                            </div>
-                        </Button>
-                    ) : (
-                        <Button
-                            variant="outline"
-                            className="justify-start h-12"
-                            onClick={() => { setSelectedDelivery(null); setShowDeliveryUpload(true); }}
-                        >
-                            <Upload className="mr-3 h-4 w-4" />
-                            <div className="text-left">
-                                <div className="font-medium">Cadastrar Entrega Manual</div>
-                                <div className="text-xs text-gray-500">Usar documento SEFAZ</div>
-                            </div>
-                        </Button>
-                    )}
+                    <Button variant="outline" className="justify-start h-12" onClick={() => setShowAddDelivery(true)}>
+                        <Plus className="mr-3 h-4 w-4" />
+                        <div className="text-left">
+                            <div className="font-medium">+ Adicionar NF</div>
+                            <div className="text-xs text-gray-500">Adicione novas entregas</div>
+                        </div>
+                    </Button>
 
                     {routeStarted && (
                         <div className="pl-12 mt-2 text-xs text-gray-500">
@@ -1508,7 +1475,7 @@ const handleDisableLocation = () => {
 
                     {/* Botão Iniciar Rota */}
 	                    <Button
-	                        onClick={startRoute}
+	                        onClick={handleStartRoute}
 	                        className="bg-green-600 hover:bg-green-700 w-full h-14 text-lg font-semibold"
 	                        disabled={requestingLocation}
 	                    >
@@ -1520,7 +1487,7 @@ const handleDisableLocation = () => {
                 // FASE ON_ROUTE: Lista de Entregas Normal
                 <Card>
                     <CardHeader>
-                        <CardTitle>Minhas Entregas - Hoje</CardTitle>
+                        <CardTitle>Minhas Entregas - Hoje e Pendências</CardTitle>
                     </CardHeader>
                     <CardContent>
                         {deliveries.length === 0 ? (
@@ -1796,10 +1763,6 @@ const handleDisableLocation = () => {
                 mode="driver"
                 onSuccess={() => {
                     loadTodayDeliveries();
-                    toast({
-                        title: "Entrega cadastrada",
-                        description: "A entrega foi cadastrada com sucesso!",
-                    });
                 }}
             />
 
@@ -1811,10 +1774,6 @@ const handleDisableLocation = () => {
                 onSuccess={() => {
                     setShowAddDelivery(false);
                     loadTodayDeliveries();
-                    toast({
-                        title: "NF adicionada com sucesso!",
-                        description: "A entrega foi adicionada à sua carga.",
-                    });
                 }}
             />
 
@@ -1973,6 +1932,7 @@ const handleDisableLocation = () => {
 
             {/* Modal de Confirmação da Foto + Notas (2 passos) */}
             <Dialog open={showPhotoConfirmModal} onOpenChange={(open) => {
+                if (isUploading) return;
                 if (!open) { setFinalizeStep(1); setFinalizeNotes(''); setOcrResult(null); setEditOcrCnpj(''); setEditOcrClient(''); setEditOcrNf(''); setCapturedPhoto(null); }
                 setShowPhotoConfirmModal(open);
             }}>

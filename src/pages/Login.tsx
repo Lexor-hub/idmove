@@ -166,6 +166,7 @@ const Login: React.FC = () => {
                   <User className="absolute left-3 top-3 h-5 w-5 text-muted-foreground group-focus-within:text-primary transition-colors" />
                   <Input
                     id="username"
+                    name="username"
                     type="email"
                     autoComplete="email"
                     value={credentials.username}
@@ -183,6 +184,8 @@ const Login: React.FC = () => {
                   <Lock className="absolute left-3 top-3 h-5 w-5 text-muted-foreground group-focus-within:text-primary transition-colors" />
                   <Input
                     id="password"
+                    name="password"
+                    autoComplete="current-password"
                     type="password"
                     value={credentials.password}
                     onChange={(e) => setCredentials({ ...credentials, password: e.target.value })}

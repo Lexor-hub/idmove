@@ -9,6 +9,7 @@ import { apiService } from '@/services/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { processImageOCR } from '@/services/ocrService';
 import { extrairChaveDaImagem } from '@/lib/nfe-barcode';
+import { todayBrt } from '@/lib/date';
 import {
   FIXED_NFE_EMITENTE_CNPJ,
   FIXED_NFE_EMITENTE_NAME,
@@ -62,7 +63,7 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
   const [cnpjTransportadora, setCnpjTransportadora] = useState(FIXED_NFE_TRANSPORTADORA_CNPJ);
   const [clientName, setClientName] = useState('');
   const [nfNumber, setNfNumber] = useState('');
-  const [nfDate, setNfDate] = useState(new Date().toISOString().split('T')[0]);
+  const [nfDate, setNfDate] = useState(todayBrt());
   const [selectedDriverId, setSelectedDriverId] = useState<string>('');
   const [deliveryAddress, setDeliveryAddress] = useState('');
 
@@ -105,7 +106,7 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
     setCnpjTransportadora(FIXED_NFE_TRANSPORTADORA_CNPJ);
     setClientName('');
     setNfNumber('');
-    setNfDate(new Date().toISOString().split('T')[0]);
+    setNfDate(todayBrt());
     setSelectedDriverId('');
     setDeliveryAddress('');
     setNfImageFile(null);
@@ -255,7 +256,8 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
     try {
       let driverId: string | null = null;
       if (mode === 'driver') {
-        driverId = user?.driver_id?.toString() || user?.id?.toString() || null;
+        driverId = user?.driver_id?.toString() || await apiService.getCurrentDriverId();
+        if (!driverId) throw new Error('Motorista sem vínculo operacional. Entre novamente ou contate o administrador.');
       } else if (selectedDriverId) {
         driverId = selectedDriverId;
       }
@@ -282,8 +284,8 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
 
       if (response.success) {
         toast({
-          title: 'Entrega cadastrada!',
-          description: `NF-e ${nfNumber} — ${clientName}`,
+          title: response.data?.deduped ? 'NF-e já cadastrada' : 'Entrega cadastrada!',
+          description: response.data?.dedupe_reason || `NF-e ${nfNumber} — ${clientName}`,
         });
         onOpenChange(false);
         onSuccess?.();
@@ -297,7 +299,7 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
     } catch (err) {
       toast({
         title: 'Erro inesperado',
-        description: 'Não foi possível salvar a entrega',
+        description: err instanceof Error ? err.message : 'Não foi possível salvar a entrega',
         variant: 'destructive',
       });
     } finally {
@@ -306,7 +308,7 @@ export const SimpleDeliveryForm: React.FC<SimpleDeliveryFormProps> = ({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(next) => { if (!saving) onOpenChange(next); }}>
       <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">

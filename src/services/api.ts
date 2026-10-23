@@ -93,6 +93,8 @@ const todayIso = todayBrt;
 // Cenários cobertos: duplicate key (23505), foreign key (23503), pgcrypto missing.
 const translateKnownErrors = (raw: string): string | null => {
   const lower = raw.toLowerCase();
+  if (lower.includes('invalid login credentials')) return 'E-mail ou senha incorretos. Confira os dados e tente novamente.';
+  if (lower.includes('failed to fetch') || lower.includes('networkerror')) return 'Não foi possível conectar. Verifique sua internet e tente novamente.';
   if (lower.includes('23505') && lower.includes('profiles_auth_user_id_key')) {
     return 'Esse email já tem cadastro parcial no sistema (de uma tentativa anterior que falhou). Avise o suporte pra limpar o cadastro órfão antes de tentar de novo.';
   }
@@ -339,14 +341,24 @@ class ApiService {
       profile = bootstrapProfile;
     }
 
-    const { data: company } = profile.company_id
-      ? await supabase.from('companies').select('*').eq('id', profile.company_id).maybeSingle()
-      : { data: null };
+    if (!profile.is_active || profile.status !== 'ATIVO') {
+      throw new Error('Seu acesso está inativo. Contate o administrador.');
+    }
 
-    const [{ data: driver }, { data: client }] = await Promise.all([
+    const { data: company, error: companyError } = profile.company_id
+      ? await supabase.from('companies').select('*').eq('id', profile.company_id).maybeSingle()
+      : { data: null, error: null };
+    if (companyError) throw companyError;
+    if (profile.role !== 'MASTER' && !company) throw new Error('Usuário sem empresa vinculada. Contate o administrador.');
+
+    const [{ data: driver, error: driverError }, { data: client, error: clientError }] = await Promise.all([
       supabase.from('drivers').select('id').eq('profile_id', profile.id).maybeSingle(),
       supabase.from('clients').select('id').eq('profile_id', profile.id).maybeSingle(),
     ]);
+
+    if (driverError) throw driverError;
+    if (clientError) throw clientError;
+    if (profile.role === 'DRIVER' && !driver) throw new Error('Motorista sem vínculo operacional. Contate o administrador.');
 
     this.contextCache = {
       profile: profile as ProfileRow,
@@ -897,6 +909,11 @@ class ApiService {
 
       if (filters?.driver_id) query = query.eq('driver_id', filters.driver_id);
       if (filters?.status) query = query.eq('status', normalizeDeliveryStatus(filters.status));
+      if (filters?.operational_date) {
+        const date = filters.operational_date;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Data inválida.');
+        query = query.or(`scheduled_date.eq.${date},and(scheduled_date.lt.${date},status.in.(PENDING,ASSIGNED,IN_TRANSIT)),delivered_at.gte.${date}T00:00:00-03:00`);
+      }
       if (filters?.scheduled_date) query = query.eq('scheduled_date', filters.scheduled_date);
       if (filters?.date_from) query = query.gte('scheduled_date', filters.date_from);
       if (filters?.date_to) query = query.lte('scheduled_date', filters.date_to);
@@ -1024,7 +1041,10 @@ class ApiService {
       const requestedDriverId = payload.driver_id && payload.driver_id !== 'none'
         ? String(payload.driver_id)
         : null;
-      const driverId = requestedDriverId || context.driverId || null;
+      const driverId = context.profile.role === 'DRIVER'
+        ? context.driverId
+        : requestedDriverId || null;
+      if (context.profile.role === 'DRIVER' && !driverId) throw new Error('Motorista sem vínculo operacional.');
 
       let sourceDocumentPath: string | null = null;
       if (payload.file instanceof File) {
@@ -1060,6 +1080,8 @@ class ApiService {
           .from('deliveries')
           .update({
             ...deliveryPayload,
+            status: existingOpen.status === 'IN_TRANSIT' && existingOpen.driver_id === driverId ? 'IN_TRANSIT' : deliveryPayload.status,
+            source_document_path: sourceDocumentPath || existingOpen.source_document_path,
             notes: nextNotes,
             updated_at: new Date().toISOString(),
           })

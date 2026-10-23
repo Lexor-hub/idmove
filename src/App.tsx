@@ -9,6 +9,7 @@ import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import Login from "@/pages/Login";
 import React, { Suspense } from "react";
 import NotFound from "./pages/NotFound";
+import { toast } from "sonner";
 
 const Dashboard = React.lazy(() => import("./pages/dashboard").then((module) => ({ default: module.Dashboard })));
 const Users = React.lazy(() => import("./pages/dashboard/Users"));
@@ -24,13 +25,17 @@ const ReceiptsReport = React.lazy(() => import("./pages/dashboard/ReceiptsReport
 
 const queryClient = new QueryClient();
 
-let serviceWorkerReloading = false;
-
+// Installing or updating the PWA must not erase a login, photo or draft.
 if (typeof window !== "undefined" && "serviceWorker" in navigator) {
+  const hadController = Boolean(navigator.serviceWorker.controller);
   navigator.serviceWorker.addEventListener("controllerchange", () => {
-    if (serviceWorkerReloading) return;
-    serviceWorkerReloading = true;
-    window.location.reload();
+    if (!hadController) return;
+    toast("Atualização disponível", {
+      id: "app-update",
+      description: "Conclua e salve sua operação antes de atualizar.",
+      duration: Infinity,
+      action: { label: "Atualizar", onClick: () => window.location.reload() },
+    });
   });
 }
 
@@ -48,9 +53,9 @@ const PageSuspense = ({ children }: { children: React.ReactNode }) => (
 
 // Route wrapper component to handle initial redirect
 const AppRoutes = () => {
-  const { isAuthenticated, loading } = useAuth();
+  const { isAuthenticated, initializing } = useAuth();
   
-  if (loading) {
+  if (initializing) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center space-y-4">

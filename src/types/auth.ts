@@ -44,6 +44,7 @@ export interface AuthContextType {
   selectCompany: (companyId: string) => Promise<void>;
   logout: () => Promise<void>;
   loading: boolean;
+  initializing: boolean;
 }
 
 export interface LoginCredentials {
